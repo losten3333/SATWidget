@@ -43,3 +43,124 @@ class ConfigTests(unittest.TestCase):
             reloaded = Config(path)
 
         self.assertFalse(reloaded.satellites[0]["map_visible"])
+
+    def test_add_satellite_appends_and_saves(self):
+        data = {
+            "display": {},
+            "observer": {},
+            "tle": {},
+            "satellites": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            config = Config(path)
+            config.add_satellite(25544, "ISS (ZARYA)", "#00FF00")
+            reloaded = Config(path)
+
+        self.assertEqual(len(reloaded.satellites), 1)
+        entry = reloaded.satellites[0]
+        self.assertEqual(entry["norad"], 25544)
+        self.assertEqual(entry["name"], "ISS (ZARYA)")
+        self.assertEqual(entry["color"], "#00FF00")
+        self.assertTrue(entry["enabled"])
+        self.assertTrue(entry["map_visible"])
+
+    def test_add_satellite_ignores_duplicate(self):
+        data = {
+            "display": {},
+            "observer": {},
+            "tle": {},
+            "satellites": [{"norad": 25544, "name": "ISS"}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            config = Config(path)
+            config.add_satellite(25544, "ISS (ZARYA)", "#00FF00")
+            reloaded = Config(path)
+
+        self.assertEqual(len(reloaded.satellites), 1)
+        self.assertEqual(reloaded.satellites[0]["name"], "ISS")
+
+    def test_remove_satellite_removes_and_saves(self):
+        data = {
+            "display": {},
+            "observer": {},
+            "tle": {},
+            "satellites": [
+                {"norad": 25544, "name": "ISS"},
+                {"norad": 25545, "name": "OTHER"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            config = Config(path)
+            self.assertTrue(config.remove_satellite(25544))
+            reloaded = Config(path)
+
+        self.assertEqual([s["norad"] for s in reloaded.satellites], [25545])
+
+    def test_remove_missing_satellite_returns_false(self):
+        data = {
+            "display": {},
+            "observer": {},
+            "tle": {},
+            "satellites": [{"norad": 25544}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            config = Config(path)
+            self.assertFalse(config.remove_satellite(99999))
+            reloaded = Config(path)
+
+        self.assertEqual(len(reloaded.satellites), 1)
+
+    def test_update_satellite_changes_and_saves(self):
+        data = {
+            "display": {},
+            "observer": {},
+            "tle": {},
+            "satellites": [{
+                "norad": 25544,
+                "name": "ISS",
+                "color": "#00FF00",
+                "show_track": True,
+                "show_label": True,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            config = Config(path)
+            config.update_satellite(
+                25544,
+                name="ISS (ZARYA)",
+                color="#FF0000",
+                show_track=False,
+                show_label=True,
+            )
+            reloaded = Config(path)
+
+        entry = reloaded.satellites[0]
+        self.assertEqual(entry["name"], "ISS (ZARYA)")
+        self.assertEqual(entry["color"], "#FF0000")
+        self.assertFalse(entry["show_track"])
+        self.assertTrue(entry["show_label"])
+        self.assertEqual(entry["norad"], 25544)
+
+    def test_update_missing_satellite_raises(self):
+        data = {
+            "display": {},
+            "observer": {},
+            "tle": {},
+            "satellites": [{"norad": 25544}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            config = Config(path)
+            with self.assertRaises(ValueError):
+                config.update_satellite(99999, name="NOPE")

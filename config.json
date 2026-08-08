@@ -26,44 +26,37 @@
     "cache": "data/tle.txt",
     "providers": [
       {
+        "name": "Space-Track GP",
+        "type": "space_track",
+        "format": "gp",
+        "enabled": true,
+        "priority": 1,
+        "cache": "data/gp.json",
+        "url": "https://www.space-track.org",
+        "params": {
+          "query": "basicspacedata/query/class/gp/EPOCH/%3Enow-30/ORDERBY/NORAD_CAT_ID/format/json"
+        },
+        "auth": {
+          "user_env": "SPACE_TRACK_USER",
+          "password_env": "SPACE_TRACK_PASSWORD"
+        }
+      },
+      {
         "name": "CelesTrak GP",
         "type": "http",
         "format": "gp",
         "enabled": true,
-        "priority": 1,
+        "priority": 2,
         "cache": "data/gp.json",
         "url": "https://celestrak.org/NORAD/elements/gp.php",
         "params": {
           "GROUP": "active",
           "FORMAT": "json"
         }
-      },
-      {
-        "name": "CelesTrak TLE",
-        "type": "http",
-        "format": "tle",
-        "enabled": false,
-        "priority": 2,
-        "cache": "data/tle.txt",
-        "url": "https://celestrak.org/NORAD/elements/gp.php",
-        "params": {
-          "GROUP": "active",
-          "FORMAT": "tle"
-        }
       }
     ]
   },
   "satellites": [
-    {
-      "norad": 25544,
-      "name": "ISS",
-      "color": "#00FF00",
-      "enabled": false,
-      "show_track": true,
-      "show_orbit": true,
-      "show_label": true,
-      "map_visible": false
-    },
     {
       "norad": 43877,
       "name": "KANOPUS-V 6",
@@ -72,7 +65,7 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": true
     },
     {
       "norad": 59051,
@@ -89,10 +82,10 @@
       "name": "COSMOS 2572 (ОКР1)",
       "color": "#FF05AA",
       "enabled": true,
-      "show_track": true,
+      "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": true
     },
     {
       "norad": 53370,
@@ -102,7 +95,7 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": true
     },
     {
       "norad": 67281,
@@ -311,7 +304,7 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": false,
+      "show_label": true,
       "map_visible": true
     },
     {
@@ -331,7 +324,7 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": false,
+      "show_label": true,
       "map_visible": true
     },
     {
@@ -341,7 +334,7 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": false,
+      "show_label": true,
       "map_visible": true
     },
     {
@@ -351,7 +344,7 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": false,
+      "show_label": true,
       "map_visible": true
     },
     {
@@ -361,7 +354,7 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": false,
+      "show_label": true,
       "map_visible": true
     },
     {
@@ -381,7 +374,7 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": false,
+      "show_label": true,
       "map_visible": true
     }
   ]

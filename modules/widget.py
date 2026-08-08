@@ -1,20 +1,50 @@
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from math import radians
 
 import numpy as np
-from PySide6.QtCore import QEvent, Qt, QPointF, QRect, QRectF
+from PySide6.QtCore import QEvent, Qt, QPoint, QPointF, QRect, QRectF
 from PySide6.QtCore import QThread, QTimer, Signal
-from PySide6.QtWidgets import QScrollBar, QWidget
+from PySide6.QtWidgets import (
+    QScrollBar, QWidget, QLineEdit, QPushButton,
+    QMenu, QWidgetAction, QLabel, QCheckBox, QHBoxLayout
+)
 
 from PySide6.QtGui import (
     QColor,
     QPainter,
     QPen,
-    QPixmap, QPainterPath, QPolygonF, QImage
+    QPixmap, QPainterPath, QPolygonF, QImage,
+    QIntValidator
 )
 
 from modules.astronomy import Astronomy
+
+
+def sort_satellites(rows, column, ascending):
+    """
+    Возвращает строки таблицы, отсортированные по полю column.
+
+    Значения None в колонке «След. пролет» всегда помещаются в конец
+    независимо от направления сортировки.
+    """
+
+    if column is None:
+        return list(rows)
+
+    def key(sat):
+        if column == "name":
+            return (sat.name or "").lower()
+        return getattr(sat, column)
+
+    if column == "next_pass":
+        present = [s for s in rows if s.next_pass is not None]
+        missing = [s for s in rows if s.next_pass is None]
+        present.sort(key=key, reverse=not ascending)
+        return present + missing
+
+    return sorted(rows, key=key, reverse=not ascending)
 
 
 class SourceRefreshWorker(QThread):
@@ -76,6 +106,22 @@ class MainWidget(QWidget):
         self.max_table_rows = 10
         self.table_header_height = 26
         self.table_row_height = 22
+        self.input_row_height = 30
+
+        # (заголовок, x, ключ сортировки или None)
+        self.table_columns = [
+            ("", 10, None),
+            ("Название", 48, "name"),
+            ("NORAD ID", 155, "norad"),
+            ("Орбита (Δ72ч)", 245, "mean_altitude"),
+            ("Высота", 390, "altitude"),
+            ("Период", 475, "period"),
+            ("Наклон. (Δ72ч)", 565, "inclination"),
+            ("RAAN (Δсут)", 715, "raan"),
+            ("След. пролет", 830, "next_pass"),
+        ]
+        self.sort_column = None
+        self.sort_ascending = True
 
 
         self.table_scroll_offset = 0
@@ -83,6 +129,7 @@ class MainWidget(QWidget):
         self.status_height = (
                 HEADER_HEIGHT +
                 ROW_HEIGHT * (self.max_table_rows - 1) +
+                self.input_row_height +
                 8
         )
 
@@ -109,6 +156,52 @@ class MainWidget(QWidget):
         self.table_scrollbar.setSingleStep(1)
         self.table_scrollbar.valueChanged.connect(self.set_table_scroll_offset)
         self.layout_table_scrollbar()
+
+        self.notice_text = "Данные спутников обновлены"
+        self.notice_color = QColor(25, 100, 55, 225)
+
+        self.norad_input = QLineEdit(self)
+        self.norad_input.setPlaceholderText("NORAD ID")
+        self.norad_input.setValidator(QIntValidator(0, 999999, self))
+        self.norad_input.returnPressed.connect(self.add_satellite_from_input)
+
+        self.add_button = QPushButton("Добавить", self)
+        self.add_button.clicked.connect(self.add_satellite_from_input)
+
+        self.delete_button = QPushButton("Удалить", self)
+        self.delete_button.clicked.connect(self.remove_satellite_from_input)
+
+        self.controls_style = """
+            QLineEdit {
+                background: #2a2a2a;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 1px 4px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #7a7a7a;
+            }
+            QPushButton {
+                background: #3a3a3a;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 2px 6px;
+            }
+            QPushButton:hover {
+                background: #4a4a4a;
+            }
+            QPushButton:pressed {
+                background: #2f2f2f;
+            }
+        """
+        self.norad_input.setStyleSheet(self.controls_style)
+        self.add_button.setStyleSheet(self.controls_style)
+        self.delete_button.setStyleSheet(self.controls_style)
+
+        self.layout_controls()
+
         self.setWindowTitle("SAT Widget")
 
         self.move(
@@ -153,7 +246,15 @@ class MainWidget(QWidget):
 
     def mousePressEvent(self, event):
 
-        if event.button() == Qt.LeftButton and self.toggle_table_satellite(event.position()):
+        if event.button() == Qt.LeftButton and self.toggle_table_sort(event.position()):
+            event.accept()
+            return
+
+        if event.button() == Qt.LeftButton and self.toggle_satellite_map_visibility(event.position()):
+            event.accept()
+            return
+
+        if event.button() == Qt.LeftButton and self.open_satellite_settings(event.position()):
             event.accept()
             return
 
@@ -297,6 +398,8 @@ class MainWidget(QWidget):
         super().resizeEvent(event)
         if hasattr(self, "table_scrollbar"):
             self.layout_table_scrollbar()
+        if hasattr(self, "norad_input"):
+            self.layout_controls()
         self.update()
 
     def enabled_table_satellites(self):
@@ -327,7 +430,133 @@ class MainWidget(QWidget):
                 int(self.status_height * self.scale)
             )
 
-    def toggle_table_satellite(self, position):
+    def layout_controls(self):
+
+        scale = self.scale
+        row_top = (
+                self.map_height +
+                self.status_height -
+                self.input_row_height
+        ) * scale
+        height = (self.input_row_height - 6) * scale
+        y = row_top + 3 * scale
+
+        self.norad_input.setGeometry(
+            int(10 * scale),
+            int(y),
+            int(90 * scale),
+            int(height)
+        )
+        self.add_button.setGeometry(
+            int(110 * scale),
+            int(y),
+            int(80 * scale),
+            int(height)
+        )
+        self.delete_button.setGeometry(
+            int(196 * scale),
+            int(y),
+            int(80 * scale),
+            int(height)
+        )
+
+    def _norad_from_input(self) -> int | None:
+
+        text = self.norad_input.text().strip()
+
+        if not text.isdigit():
+            return None
+
+        return int(text)
+
+    def _next_satellite_color(self) -> str:
+        """Выбирает первый цвет палитры, ещё не занятый спутниками."""
+
+        used = {
+            sat.color.name().upper()
+            for sat in self.satellites.get_satellites()
+        }
+
+        palette = [
+            "#e6194B", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
+            "#911eb4", "#42d4f4", "#f032e6", "#bfef45", "#fabed4",
+            "#469990", "#dcbeff", "#9A6324", "#800000", "#aaffc3",
+            "#808000", "#ffd8b1", "#000075", "#a9a9a9",
+        ]
+
+        for candidate in palette:
+            if candidate.upper() not in used:
+                return candidate
+
+        return palette[len(used) % len(palette)]
+
+    def add_satellite_from_input(self):
+
+        norad = self._norad_from_input()
+
+        if norad is None:
+            self.show_message("Введите NORAD ID", ok=False)
+            return
+
+        existing = {
+            sat.norad
+            for sat in self.satellites.get_satellites()
+        }
+
+        if norad in existing:
+            self.show_message(f"Спутник {norad} уже добавлен", ok=False)
+            return
+
+        color = self._next_satellite_color()
+        satellite = self.satellites.add_satellite(norad, color)
+
+        if satellite is None:
+            self.show_message(f"Спутник {norad} не найден в данных", ok=False)
+            return
+
+        self.config.add_satellite(norad, satellite.name, color)
+        self.satellites.update()
+
+        self.layout_table_scrollbar()
+        self.table_scrollbar.setValue(self.table_scrollbar.maximum())
+
+        self.norad_input.clear()
+        self.show_message(f"Добавлен: {satellite.name}")
+        self.update()
+
+    def remove_satellite_from_input(self):
+
+        norad = self._norad_from_input()
+
+        if norad is None:
+            self.show_message("Введите NORAD ID", ok=False)
+            return
+
+        removed = self.satellites.remove_satellite(norad)
+        removed_from_config = self.config.remove_satellite(norad)
+
+        if not removed and not removed_from_config:
+            self.show_message(f"Спутник {norad} не найден", ok=False)
+            return
+
+        self.layout_table_scrollbar()
+        self.norad_input.clear()
+        self.show_message(f"Удалён: {norad}")
+        self.update()
+
+    def show_message(self, text, ok=True):
+
+        self.notice_text = text
+        self.notice_color = (
+            QColor(25, 100, 55, 225)
+            if ok
+            else QColor(160, 50, 50, 225)
+        )
+        self.update_notice_visible = True
+        self.update_notice_timer.start(5_000)
+        self.update()
+
+    def toggle_satellite_map_visibility(self, position):
 
         if self.scale == 0:
             return False
@@ -336,12 +565,17 @@ class MainWidget(QWidget):
         y = position.y() / self.scale
         row_top = self.map_height + self.table_header_height
         row_index = int((y - row_top) // self.table_row_height)
-        checkbox = QRectF(10, row_top + row_index * self.table_row_height + 4, 14, 14)
+        checkbox = QRectF(
+            10,
+            row_top + row_index * self.table_row_height + 4,
+            14,
+            14
+        )
 
         if row_index < 0 or not checkbox.contains(QPointF(x, y)):
             return False
 
-        satellites = self.enabled_table_satellites()
+        satellites = self._sorted_table_satellites()
         sat_index = self.table_scroll_offset + row_index
         if sat_index >= len(satellites) or row_index >= self.max_table_rows:
             return False
@@ -355,6 +589,283 @@ class MainWidget(QWidget):
         self.update()
         return True
 
+    def open_satellite_settings(self, position):
+
+        if self.scale == 0:
+            return False
+
+        x = position.x() / self.scale
+        y = position.y() / self.scale
+        row_top = self.map_height + self.table_header_height
+        row_index = int((y - row_top) // self.table_row_height)
+        gear = QRectF(
+            26,
+            row_top + row_index * self.table_row_height + 3,
+            14,
+            14
+        )
+
+        if row_index < 0 or not gear.contains(QPointF(x, y)):
+            return False
+
+        satellites = self._sorted_table_satellites()
+        sat_index = self.table_scroll_offset + row_index
+        if sat_index >= len(satellites) or row_index >= self.max_table_rows:
+            return False
+
+        satellite = satellites[sat_index]
+
+        cfg = self._config_entry_for_norad(satellite.norad)
+
+        if cfg is None:
+            return False
+
+        self._show_satellite_settings_menu(satellite, cfg, gear)
+        return True
+
+    def _config_entry_for_norad(self, norad):
+        for entry in self.config.satellites:
+            if entry.get("norad") == norad:
+                return entry
+
+        return None
+
+    FIELD_LABELS = {
+        "name": "Название",
+        "color": "Цвет",
+        "show_track": "Показывать трек",
+        "show_orbit": "Показывать орбиту",
+        "show_label": "Показывать подпись",
+    }
+
+    def _settings_menu_style(self):
+        return """
+            QMenu {
+                background-color: #2a2a2a;
+                color: #ffffff;
+                border: 1px solid #555555;
+            }
+            QMenu::item {
+                background: transparent;
+                padding: 2px;
+            }
+            QMenu::item:selected {
+                background: #3a3a3a;
+            }
+        """
+
+    def _settings_menu_row(self, label, value, is_bool):
+
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(8, 2, 8, 2)
+        layout.setSpacing(10)
+
+        label_widget = QLabel(label)
+        label_widget.setStyleSheet(
+            "color: #ffffff; background: transparent;"
+        )
+        label_widget.setMinimumWidth(140)
+        layout.addWidget(label_widget)
+
+        if is_bool:
+            editor = QCheckBox(container)
+            editor.setChecked(bool(value))
+            editor.setStyleSheet(
+                "color: #ffffff; background: transparent;"
+            )
+        else:
+            editor = QLineEdit(value)
+            editor.setStyleSheet(self.controls_style)
+            editor.setMinimumWidth(120)
+
+        layout.addWidget(editor)
+
+        return container, editor
+
+    def _build_satellite_settings_menu(self, satellite, cfg):
+
+        menu = QMenu(self)
+        menu.setStyleSheet(self._settings_menu_style())
+
+        editors = []
+
+        for key, value in cfg.items():
+
+            if key in ("enabled", "norad", "map_visible"):
+                continue
+
+            is_bool = isinstance(value, bool)
+            label = self.FIELD_LABELS.get(key, key)
+            container, editor = self._settings_menu_row(
+                label,
+                value,
+                is_bool
+            )
+
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(container)
+            menu.addAction(action)
+
+            editors.append((key, editor, is_bool))
+
+        menu.addSeparator()
+
+        apply_container = QWidget()
+        apply_layout = QHBoxLayout(apply_container)
+        apply_layout.setContentsMargins(8, 4, 8, 6)
+
+        apply_button = QPushButton("Применить", apply_container)
+        apply_button.setStyleSheet(self.controls_style)
+        apply_layout.addStretch()
+        apply_layout.addWidget(apply_button)
+        apply_layout.addStretch()
+
+        apply_action = QWidgetAction(menu)
+        apply_action.setDefaultWidget(apply_container)
+        menu.addAction(apply_action)
+
+        apply_button.clicked.connect(
+            lambda: self._apply_satellite_settings(
+                satellite,
+                cfg,
+                editors,
+                menu
+            )
+        )
+
+        return menu
+
+    def _show_satellite_settings_menu(self, satellite, cfg, gear_rect):
+
+        menu = self._build_satellite_settings_menu(satellite, cfg)
+
+        global_pos = self.mapToGlobal(
+            QPoint(
+                int(gear_rect.left() * self.scale),
+                int(gear_rect.bottom() * self.scale)
+            )
+        )
+
+        menu.exec(global_pos)
+        menu.deleteLater()
+
+    def _apply_satellite_settings(self, satellite, cfg, editors, menu):
+
+        changes = {}
+
+        for key, editor, is_bool in editors:
+
+            if is_bool:
+                changes[key] = editor.isChecked()
+                continue
+
+            value = editor.text().strip()
+
+            if key == "color" and not re.fullmatch(
+                    r"#[0-9a-fA-F]{6}",
+                    value
+            ):
+                self.show_message("Некорректный цвет", ok=False)
+                return
+
+            changes[key] = value
+
+        if "name" in changes:
+            satellite.name = changes["name"]
+
+        if "color" in changes:
+            satellite.color = QColor(changes["color"])
+
+        if "show_track" in changes:
+            satellite.show_track = changes["show_track"]
+
+        if "show_orbit" in changes:
+            satellite.show_orbit = changes["show_orbit"]
+
+            if satellite.show_orbit:
+                self.satellites.calculate_orbit(
+                    satellite,
+                    force=True
+                )
+
+        if "show_label" in changes:
+            satellite.show_label = changes["show_label"]
+
+        self.config.update_satellite(
+            satellite.norad,
+            **changes
+        )
+
+        self.layout_table_scrollbar()
+        self.show_message("Настройки сохранены")
+        self.update()
+        menu.close()
+
+    def _sorted_table_satellites(self):
+        """Возвращает видимые спутники в порядке сортировки таблицы."""
+        return sort_satellites(
+            self.enabled_table_satellites(),
+            self.sort_column,
+            self.sort_ascending
+        )
+
+    def _column_at_x(self, x) -> int | None:
+        """Возвращает индекс колонки по логической координате x."""
+
+        starts = [
+            column[1]
+            for column in self.table_columns
+        ]
+
+        for index, start in enumerate(starts):
+            end = (
+                starts[index + 1]
+                if index + 1 < len(starts)
+                else self.map_width
+            )
+            if start <= x < end:
+                return index
+
+        return None
+
+    def toggle_table_sort(self, position) -> bool:
+
+        if self.scale == 0:
+            return False
+
+        x = position.x() / self.scale
+        y = position.y() / self.scale
+
+        header_top = self.map_height
+        header_bottom = self.map_height + self.table_header_height
+
+        if not (header_top <= y <= header_bottom):
+            return False
+
+        index = self._column_at_x(x)
+
+        if index is None:
+            return False
+
+        column_key = self.table_columns[index][2]
+
+        # Колонка чекбоксов не сортируется
+        if column_key is None:
+            return False
+
+        if self.sort_column == column_key:
+            self.sort_ascending = not self.sort_ascending
+        else:
+            self.sort_column = column_key
+            self.sort_ascending = True
+
+        self.table_scroll_offset = 0
+        self.table_scrollbar.setValue(0)
+        self.layout_table_scrollbar()
+        self.update()
+        return True
+
     def changeEvent(self, event):
 
         super().changeEvent(event)
@@ -364,8 +875,12 @@ class MainWidget(QWidget):
         if event.type() == QEvent.WindowStateChange and self.isMaximized():
             QTimer.singleShot(0, self.showNormal)
 
-    def show_update_notice(self):
+    def show_update_notice(self, text=None):
 
+        if text is not None:
+            self.notice_text = text
+
+        self.notice_color = QColor(25, 100, 55, 225)
         self.update_notice_visible = True
         self.update_notice_timer.start(60_000)
         self.update()
@@ -831,24 +1346,20 @@ class MainWidget(QWidget):
         font.setPointSize(9)
         painter.setFont(font)
 
-        columns = [
-            ("", 10),
-            ("Название", 32),
-            ("NORAD ID", 155),
-            ("Орбита (Δ72ч)", 245),
-            ("Высота", 390),
-            ("Период", 475),
-            ("Наклон. (Δ72ч)", 565),
-            ("RAAN (Δсут)", 715),
-            ("След. пролет", 830)
-        ]
-
-        for text, x in columns:
+        for index, (text, x, column_key) in enumerate(self.table_columns):
             painter.drawText(
                 x,
                 y0 + 18,
                 text
             )
+
+            if column_key is not None and column_key == self.sort_column:
+                marker = "▲" if self.sort_ascending else "▼"
+                painter.drawText(
+                    x + painter.fontMetrics().horizontalAdvance(text) + 4,
+                    y0 + 18,
+                    marker
+                )
 
         painter.setPen(QColor(80, 80, 80))
 
@@ -863,7 +1374,7 @@ class MainWidget(QWidget):
         painter.setFont(font)
 
         row_y = y0 + header_h + 18
-        rows = self.enabled_table_satellites()
+        rows = self._sorted_table_satellites()
         visible_rows = rows[
             self.table_scroll_offset:
             self.table_scroll_offset + self.max_table_rows
@@ -883,7 +1394,15 @@ class MainWidget(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.setPen(Qt.white)
 
-            painter.drawText(32, row_y, sat.name)
+            self.draw_gear_icon(
+                painter,
+                QPointF(33, row_y - 8),
+                5.0
+            )
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(Qt.white)
+
+            painter.drawText(48, row_y, sat.name)
 
             painter.drawText(155, row_y, str(sat.norad))
 
@@ -959,6 +1478,36 @@ class MainWidget(QWidget):
 
             row_y += 22
 
+    def draw_gear_icon(self, painter, center, radius):
+
+        painter.save()
+        painter.translate(center.x(), center.y())
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(210, 210, 210))
+
+        teeth = 8
+
+        for i in range(teeth):
+            painter.save()
+            painter.rotate(i * 360 / teeth)
+            painter.drawRect(
+                QRectF(
+                    radius * 0.6,
+                    -radius * 0.24,
+                    radius * 0.6,
+                    radius * 0.48
+                )
+            )
+            painter.restore()
+
+        painter.drawEllipse(
+            QPointF(0, 0),
+            radius * 0.78,
+            radius * 0.78
+        )
+
+        painter.restore()
+
     @staticmethod
     def draw_history_delta(painter, x, y, delta, precision, colored):
         """Рисует изменение орбитального параметра в скобках."""
@@ -990,7 +1539,7 @@ class MainWidget(QWidget):
         if not self.update_notice_visible:
             return
 
-        text = "Данные спутников обновлены"
+        text = self.notice_text
         padding_x = 12
         padding_y = 8
         rect = painter.fontMetrics().boundingRect(text)
@@ -1002,7 +1551,7 @@ class MainWidget(QWidget):
         )
 
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(25, 100, 55, 225))
+        painter.setBrush(self.notice_color)
         painter.drawRoundedRect(box, 6, 6)
         painter.setPen(Qt.white)
         painter.drawText(

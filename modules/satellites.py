@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import timedelta, datetime, timezone
 from enum import Enum
 
@@ -253,10 +254,18 @@ class SatelliteManager:
         )
 
         success = False
+        satisfied_formats = set()
 
         for provider in providers:
 
             if not provider["enabled"]:
+                continue
+
+            fmt = provider.get("format", "").lower()
+
+            # Провайдер с этим форматом уже успешно отработал раньше
+            # (по приоритету) — остальные не нужны.
+            if fmt in satisfied_formats:
                 continue
 
             cache = Path(provider["cache"])
@@ -265,6 +274,16 @@ class SatelliteManager:
 
                 if cache.exists():
                     success = True
+                    satisfied_formats.add(fmt)
+
+                continue
+
+            if provider["type"] == "space_track":
+
+                if self._download_space_track(provider):
+                    print(f'{provider["name"]}: OK')
+                    success = True
+                    satisfied_formats.add(fmt)
 
                 continue
 
@@ -282,8 +301,6 @@ class SatelliteManager:
                     parents=True,
                     exist_ok=True
                 )
-
-                fmt = provider["format"].lower()
 
                 if fmt == "tle":
                     text = response.text
@@ -306,12 +323,80 @@ class SatelliteManager:
                     continue
                 print(f'{provider["name"]}: OK')
                 success = True
+                satisfied_formats.add(fmt)
 
             except Exception as e:
                 print(provider["name"])
                 print(e)
 
         return success
+
+    def _download_space_track(self, provider) -> bool:
+        """
+        Скачивает GP-данные с Space-Track.
+
+        Требует авторизации: логин/пароль берутся из переменных окружения
+        (по умолчанию SPACE_TRACK_USER / SPACE_TRACK_PASSWORD), чтобы не
+        хранить учётные данные в config.json.
+        """
+
+        auth = provider.get("auth", {})
+        user_env = auth.get("user_env", "SPACE_TRACK_USER")
+        password_env = auth.get("password_env", "SPACE_TRACK_PASSWORD")
+
+        username = os.environ.get(user_env, "")
+        password = os.environ.get(password_env, "")
+
+        if not username or not password:
+            print(
+                f'{provider["name"]}: не заданы учётные данные Space-Track '
+                f"(переменные окружения {user_env} / {password_env})"
+            )
+            return False
+
+        base_url = provider["url"].rstrip("/")
+        query = provider.get("params", {}).get("query")
+
+        if not query:
+            print(f'{provider["name"]}: не задан параметр query')
+            return False
+
+        with requests.Session() as session:
+
+            login_response = session.post(
+                base_url + "/ajaxauth/login",
+                data={"identity": username, "password": password},
+                timeout=20
+            )
+            login_response.raise_for_status()
+
+            if "failed" in login_response.text.lower():
+                print(
+                    f'{provider["name"]}: не удалось войти '
+                    "(проверьте логин/пароль Space-Track)"
+                )
+                return False
+
+            response = session.get(
+                base_url + "/" + query,
+                timeout=60
+            )
+            response.raise_for_status()
+
+            data = response.json()
+
+            if not isinstance(data, list):
+                print(f'{provider["name"]}: неверный GP')
+                return False
+
+            cache = Path(provider["cache"])
+            cache.parent.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+            cache.write_text(response.text, encoding="utf-8")
+
+        return True
 
     def sources_are_outdated(self) -> bool:
         """
@@ -591,6 +676,133 @@ class SatelliteManager:
             self.calculate_next_pass(
                 satellite
             )
+
+    def add_satellite(self, norad: int, color: str) -> Satellite | None:
+        """
+        Добавляет спутник по NORAD ID из текущих данных (GP или TLE).
+
+        Возвращает созданный Satellite или None, если аппарат не найден
+        в данных либо уже присутствует в списке. История высоты и
+        наклонения (orbit_history.json) при повторном добавлении
+        восстанавливается.
+        """
+
+        if any(sat.norad == norad for sat in self.satellites):
+            return None
+
+        name = f"SAT {norad}"
+        line1 = ""
+        line2 = ""
+        obj = None
+
+        gp = self.read_gp_map().get(norad)
+
+        if gp is not None:
+
+            try:
+
+                obj = self.create_object_from_gp(gp)
+                name = gp.get("OBJECT_NAME", name)
+
+            except Exception as e:
+
+                print(
+                    f"GP ошибка для {norad}: {e}"
+                )
+
+        if obj is None:
+
+            tle = self.read_tle_map().get(norad)
+
+            if tle is not None:
+
+                name, line1, line2 = tle
+
+                try:
+
+                    obj = EarthSatellite(
+                        line1,
+                        line2,
+                        name,
+                        self.ts
+                    )
+
+                except Exception as e:
+
+                    print(
+                        f"TLE ошибка для {norad}: {e}"
+                    )
+
+        if obj is None:
+            return None
+
+        satellite = Satellite(
+            norad=norad,
+            name=name,
+            color=QColor(color)
+        )
+
+        satellite.tle_line1 = line1
+        satellite.tle_line2 = line2
+
+        satellite.period = (
+                                   2 * pi
+                           ) / obj.model.no_kozai
+
+        satellite.mean_altitude = (
+            self.calculate_mean_altitude(obj)
+        )
+
+        satellite.inclination = degrees(
+            obj.model.inclo
+        )
+        satellite.raan = degrees(obj.model.nodeo)
+        satellite.raan_change_per_day = self.calculate_raan_change_per_day(obj)
+        satellite.previous_mean_altitude = None
+        self.restore_orbit_change(satellite)
+
+        satellite.model = obj
+
+        position = obj.at(
+            self.ts.now()
+        )
+
+        subpoint = wgs84.subpoint(
+            position
+        )
+
+        satellite.reference_altitude = (
+            subpoint.elevation.km
+        )
+
+        satellite.altitude = (
+            satellite.reference_altitude
+        )
+
+        self.satellites.append(
+            satellite
+        )
+
+        self.calculate_next_pass(
+            satellite
+        )
+
+        return satellite
+
+    def remove_satellite(self, norad: int) -> bool:
+        """
+        Удаляет спутник из текущего списка.
+
+        История высоты и наклонения (orbit_history.json) при этом
+        не затрагивается.
+        """
+
+        for index, sat in enumerate(self.satellites):
+            if sat.norad == norad:
+                self.satellites.pop(index)
+                return True
+
+        return False
 
     def update_satellite_from_tle(
             self,
