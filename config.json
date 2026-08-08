@@ -1,0 +1,388 @@
+{
+  "display": {
+    "width": 1000,
+    "height": 500,
+    "x": 20,
+    "y": 20,
+    "opacity": 0.96,
+    "update_sec": 5,
+    "desktop_widget": true,
+    "map": {
+      "show_grid": true,
+      "show_day_night": true,
+      "show_orbits": true,
+      "show_tracks": true,
+      "show_labels": true
+    }
+  },
+  "observer": {
+    "lat": 55.7522,
+    "lon": 37.6156,
+    "alt": 180,
+    "timezone": "Europe/Moscow"
+  },
+  "tle": {
+    "update_hours": 2,
+    "cache": "data/tle.txt",
+    "providers": [
+      {
+        "name": "CelesTrak GP",
+        "type": "http",
+        "format": "gp",
+        "enabled": true,
+        "priority": 1,
+        "cache": "data/gp.json",
+        "url": "https://celestrak.org/NORAD/elements/gp.php",
+        "params": {
+          "GROUP": "active",
+          "FORMAT": "json"
+        }
+      },
+      {
+        "name": "CelesTrak TLE",
+        "type": "http",
+        "format": "tle",
+        "enabled": false,
+        "priority": 2,
+        "cache": "data/tle.txt",
+        "url": "https://celestrak.org/NORAD/elements/gp.php",
+        "params": {
+          "GROUP": "active",
+          "FORMAT": "tle"
+        }
+      }
+    ]
+  },
+  "satellites": [
+    {
+      "norad": 25544,
+      "name": "ISS",
+      "color": "#00FF00",
+      "enabled": false,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 43877,
+      "name": "KANOPUS-V 6",
+      "color": "#00AAAA",
+      "enabled": true,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 59051,
+      "name": "METEOR-M2-4",
+      "color": "#AAAA00",
+      "enabled": true,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 58435,
+      "name": "COSMOS 2572 (ОКР1)",
+      "color": "#FF05AA",
+      "enabled": true,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 53370,
+      "name": "KHAYYAM",
+      "color": "#FF0000",
+      "enabled": true,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 67281,
+      "name": "GRIFON-1",
+      "color": "#faa17a",
+      "enabled": true,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 67272,
+      "name": "GRIFON-2",
+      "color": "#fa996e",
+      "enabled": true,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 67280,
+      "name": "GRIFON-3",
+      "color": "#fc8753",
+      "enabled": true,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 67261,
+      "name": "GRIFON-4",
+      "color": "#fc783d",
+      "enabled": true,
+      "show_track": true,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 68360,
+      "name": "RASSVET-3 1",
+      "color": "#bbfccc",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": false
+    },
+    {
+      "norad": 68361,
+      "name": "RASSVET-3 2",
+      "color": "#aafabf",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68362,
+      "name": "RASSVET-3 3",
+      "color": "#9dfcb6",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68364,
+      "name": "RASSVET-3 5",
+      "color": "#8bfca9",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68365,
+      "name": "RASSVET-3 6",
+      "color": "#79fc9c",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68366,
+      "name": "RASSVET-3 7",
+      "color": "#65fc8d",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68367,
+      "name": "RASSVET-3 8",
+      "color": "#56fc82",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68368,
+      "name": "RASSVET-3 9",
+      "color": "#4aff79",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68369,
+      "name": "RASSVET-3 10",
+      "color": "#38f269",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68370,
+      "name": "RASSVET-3 11",
+      "color": "#2cf260",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68371,
+      "name": "RASSVET-3 12",
+      "color": "#1df255",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68372,
+      "name": "RASSVET-3 13",
+      "color": "#11d645",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68373,
+      "name": "RASSVET-3 14",
+      "color": "#07b836",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68374,
+      "name": "RASSVET-3 15",
+      "color": "#09912d",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 68375,
+      "name": "RASSVET-3 16",
+      "color": "#046e20",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": false
+    },
+    {
+      "norad": 100083,
+      "name": "RASSVET-3 OBJ A",
+      "color": "#721378",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": true,
+      "map_visible": true
+    },
+    {
+      "norad": 100084,
+      "name": "RASSVET-3 OBJ B",
+      "color": "#8A0194",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": true
+    },
+    {
+      "norad": 100085,
+      "name": "RASSVET-3 OBJ C",
+      "color": "#A813B7",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": true
+    },
+    {
+      "norad": 100086,
+      "name": "RASSVET-3 OBJ D",
+      "color": "#C81CDE",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": true
+    },
+    {
+      "norad": 100087,
+      "name": "RASSVET-3 OBJ E",
+      "color": "#E12AFB",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": true
+    },
+    {
+      "norad": 100088,
+      "name": "RASSVET-3 OBJ F",
+      "color": "#ED6AFF",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": true
+    },
+    {
+      "norad": 100089,
+      "name": "RASSVET-3 OBJ G",
+      "color": "#F4A8FF",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": true
+    },
+    {
+      "norad": 100090,
+      "name": "RASSVET-3 OBJ H",
+      "color": "#F6CFFF",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": true
+    },
+    {
+      "norad": 100091,
+      "name": "RASSVET-3 OBJ J",
+      "color": "#FAE8FF",
+      "enabled": true,
+      "show_track": false,
+      "show_orbit": true,
+      "show_label": false,
+      "map_visible": true
+    }
+  ]
+}

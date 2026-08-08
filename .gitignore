@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# PyInstaller build output
+build/
+dist/
+
+# Runtime caches and data
+data/gp.json
+data/tle.txt
+data/orbit_history.json
+
+# Ephemeris (downloaded automatically by Skyfield on first run)
+de421.bsp
+
+# OS
+Thumbs.db
+.DS_Store
