@@ -56,6 +56,10 @@ class Config:
 
         raise ValueError(f"Спутник с NORAD ID {norad} отсутствует в конфигурации")
 
+    def set_satellite_esp_transmit(self, norad: int, transmit: bool) -> None:
+        """Сохраняет настройку передачи спутника на ESP32."""
+        self.update_satellite(norad, esp_transmit=transmit)
+
     def add_satellite(
             self,
             norad: int,
@@ -77,6 +81,7 @@ class Config:
             "show_orbit": True,
             "show_label": True,
             "map_visible": map_visible,
+            "esp_transmit": False,
         })
         self.save()
 

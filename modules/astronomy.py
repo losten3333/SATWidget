@@ -27,6 +27,16 @@ class Astronomy:
             subpoint.longitude.degrees
         )
 
+    def solar_ra(self) -> float:
+        """Прямое восхождение Солнца в градусах (0..360)."""
+        t = self.ts.now()
+
+        position = self.earth.at(t).observe(self.sun).apparent()
+
+        ra, _, _ = position.radec()
+
+        return ra.degrees
+
     def terminator_points(self, step=2):
         solar_lat, solar_lon = self.solar_subpoint()
 

@@ -20,6 +20,10 @@ from PySide6.QtGui import (
 )
 
 from modules.astronomy import Astronomy
+from modules.esp32_sender import Esp32Sender
+
+# Ограничение прошивки ESP32 (MAX_SATELLITES в ESP32_SatWidget.ino).
+MAX_ESP_SATELLITES = 8
 
 
 def sort_satellites(rows, column, ascending):
@@ -58,6 +62,21 @@ class SourceRefreshWorker(QThread):
 
     def run(self):
         self.downloaded.emit(self.satellites.download_sources())
+
+
+class Esp32SendWorker(QThread):
+    """Отправляет снимок спутников на ESP32 в фоновом потоке."""
+
+    completed = Signal(object, object)
+
+    def __init__(self, sender, records, parent=None):
+        super().__init__(parent)
+        self.sender = sender
+        self.records = records
+
+    def run(self):
+        result, logs = self.sender.send(self.records)
+        self.completed.emit(result, logs)
 
 
 class MainWidget(QWidget):
@@ -109,15 +128,17 @@ class MainWidget(QWidget):
         self.input_row_height = 30
 
         # (заголовок, x, ключ сортировки или None)
+        # Колонки разнесены равномерно на всю ширину таблицы.
         self.table_columns = [
             ("", 10, None),
-            ("Название", 48, "name"),
-            ("NORAD ID", 155, "norad"),
-            ("Орбита (Δ72ч)", 245, "mean_altitude"),
-            ("Высота", 390, "altitude"),
-            ("Период", 475, "period"),
-            ("Наклон. (Δ72ч)", 565, "inclination"),
-            ("RAAN (Δсут)", 715, "raan"),
+            ("Название", 55, "name"),
+            ("NORAD ID", 160, "norad"),
+            ("Орбита (Δ72ч)", 235, "mean_altitude"),
+            ("Высота", 350, "altitude"),
+            ("Период", 440, "period"),
+            ("Наклон. (Δ72ч)", 530, "inclination"),
+            ("RAAN (Δсут)", 650, "raan"),
+            ("LTAN", 755, None),
             ("След. пролет", 830, "next_pass"),
         ]
         self.sort_column = None
@@ -240,7 +261,14 @@ class MainWidget(QWidget):
         self.earth_day = QPixmap("resources/earth_day.png")
         self.earth_night = QPixmap("resources/earth_night.png")
 
+        self.esp_sender = Esp32Sender(minutes=1)
+        self.esp_send_worker = None
+        self.esp_send_pending = False
+        self.esp_prev_passes = {}
+
         self.satellites.update()
+        self._update_esp_pass_tracking()
+        self.request_esp_send()
         if self.map_options.get("show_day_night", True):
             self.night_mask = self.create_night_mask()
 
@@ -377,6 +405,7 @@ class MainWidget(QWidget):
         self.satellites.update()
         self.update()
         self.show_update_notice()
+        self.request_esp_send()
 
     def resizeEvent(self, event):
 
@@ -589,6 +618,16 @@ class MainWidget(QWidget):
         self.update()
         return True
 
+    def _can_enable_esp_transmit(self, exclude_norad=None) -> bool:
+        """Разрешает включение передачи, пока выбрано меньше
+        MAX_ESP_SATELLITES КА."""
+        count = sum(
+            1
+            for sat in self.enabled_table_satellites()
+            if sat.esp_transmit and sat.norad != exclude_norad
+        )
+        return count < MAX_ESP_SATELLITES
+
     def open_satellite_settings(self, position):
 
         if self.scale == 0:
@@ -636,6 +675,7 @@ class MainWidget(QWidget):
         "show_track": "Показывать трек",
         "show_orbit": "Показывать орбиту",
         "show_label": "Показывать подпись",
+        "esp_transmit": "Передача на ESP32",
     }
 
     def _settings_menu_style(self):
@@ -771,6 +811,16 @@ class MainWidget(QWidget):
 
             changes[key] = value
 
+        if changes.get("esp_transmit") and not self._can_enable_esp_transmit(
+                satellite.norad
+        ):
+            self.show_message(
+                f"ESP32: можно передавать не более {MAX_ESP_SATELLITES} КА. "
+                "Снимите отметку хотя бы с одного выбранного КА",
+                ok=False,
+            )
+            return
+
         if "name" in changes:
             satellite.name = changes["name"]
 
@@ -792,6 +842,9 @@ class MainWidget(QWidget):
         if "show_label" in changes:
             satellite.show_label = changes["show_label"]
 
+        if "esp_transmit" in changes:
+            satellite.esp_transmit = changes["esp_transmit"]
+
         self.config.update_satellite(
             satellite.norad,
             **changes
@@ -801,6 +854,178 @@ class MainWidget(QWidget):
         self.show_message("Настройки сохранены")
         self.update()
         menu.close()
+
+        # A snapshot must be sent for both transitions.  In particular, when
+        # the last selected satellite is unchecked, the empty snapshot clears
+        # the card on the ESP32 instead of leaving the previous data visible.
+        if "esp_transmit" in changes:
+            self.request_esp_send()
+
+    def request_esp_send(self):
+
+        if (
+                self.esp_send_worker is not None and
+                self.esp_send_worker.isRunning()
+        ):
+            self.esp_send_pending = True
+            return
+
+        self._start_esp_send_worker()
+
+    def _start_esp_send_worker(self):
+
+        self.esp_send_pending = False
+
+        try:
+            records = self._esp_satellite_records()
+        except Exception as error:
+            self.show_message(f"ESP32: {error}", ok=False)
+            return
+
+        worker = Esp32SendWorker(self.esp_sender, records, self)
+        self.esp_send_worker = worker
+        worker.completed.connect(self._on_esp_send_finished)
+        worker.start()
+
+    def _on_esp_send_finished(self, result, logs):
+
+        for log in logs:
+            print("ESP32:", log)
+
+        if result is not None:
+            self.show_message(f"ESP32: отправлено ({result})")
+        else:
+            self.show_message("ESP32: отправка не удалась", ok=False)
+
+        worker = self.esp_send_worker
+        self.esp_send_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+        if self.esp_send_pending:
+            QTimer.singleShot(0, self.request_esp_send)
+
+    def _update_esp_pass_tracking(self) -> bool:
+        """Отслеживает изменение времени следующего пролёта для передачи."""
+
+        changed = False
+
+        for sat in self.enabled_table_satellites():
+
+            if not sat.esp_transmit:
+                continue
+
+            key = sat.norad
+            current = sat.next_pass
+
+            if self.esp_prev_passes.get(key) != current:
+                changed = True
+                self.esp_prev_passes[key] = current
+
+        return changed
+
+    def _esp_satellite_records(self):
+        """Готовит записи SAT|... для ESP32 в порядке ближайших пролётов."""
+
+        selected = [
+            sat
+            for sat in self.enabled_table_satellites()
+            if sat.esp_transmit
+        ]
+
+        def pass_key(sat):
+            return (
+                sat.next_pass.timestamp()
+                if sat.next_pass is not None
+                else float("inf")
+            )
+
+        selected.sort(key=pass_key)
+
+        # Прошивка ESP32 принимает не более MAX_SATELLITES КА.
+        selected = selected[:MAX_ESP_SATELLITES]
+
+        records = []
+
+        for sat in selected:
+            records.append({
+                "name": sat.name,
+                "norad": str(sat.norad),
+                "sma": self._esp_sma(sat),
+                "period": self._esp_period(sat),
+                "incl": self._esp_inclination(sat),
+                "raan": self._esp_raan(sat),
+                "pass": self._esp_pass(sat),
+                "rotations": self._esp_rotations(sat),
+                "ltan": self._esp_ltan(sat),
+                "color": sat.color.name(),
+            })
+
+        return records
+
+    @staticmethod
+    def _rus_decimal(value: float, decimals: int) -> str:
+        """Форматирует число в русском стиле: разделитель тысяч — пробел,
+        десятичная запятая."""
+        text = f"{value:.{decimals}f}"
+        int_part, _, frac = text.partition(".")
+        sign = ""
+        if int_part.startswith("-"):
+            sign = "-"
+            int_part = int_part[1:]
+        int_part = f"{int(int_part):,}".replace(",", " ")
+        return f"{sign}{int_part},{frac}"
+
+    @staticmethod
+    def _delta_text(delta, precision: int) -> str:
+        if delta is None:
+            return ""
+        sign = "+" if delta > 0 else ""
+        return f"({sign}{MainWidget._rus_decimal(delta, precision)})"
+
+    def _esp_sma(self, sat) -> str:
+        return (
+            f"{self._rus_decimal(sat.mean_altitude, 1)} km"
+            f"{self._delta_text(sat.orbit_change_72h, 2)}"
+        )
+
+    def _esp_period(self, sat) -> str:
+        minutes = int(sat.period)
+        seconds = int(round((sat.period - minutes) * 60))
+        if seconds == 60:
+            minutes += 1
+            seconds = 0
+        return f"{minutes} min {seconds} s"
+
+    def _esp_inclination(self, sat) -> str:
+        return (
+            f"{self._rus_decimal(sat.inclination, 1)}°"
+            f"{self._delta_text(sat.inclination_change_72h, 2)}"
+        )
+
+    def _esp_raan(self, sat) -> str:
+        return (
+            f"{self._rus_decimal(sat.raan, 1)}°"
+            f"{self._delta_text(sat.raan_change_per_day, 2)}"
+        )
+
+    def _esp_pass(self, sat) -> str:
+        if sat.next_pass is None:
+            return "—"
+        return sat.next_pass.astimezone(self.timezone).strftime("%H:%M")
+
+    def _esp_ltan(self, sat) -> str:
+        """Местное солнечное время восходящего узла (LTAN).
+
+        LTAN = 12 ч + (RAAN - RA_Солнца) / 15°/ч по модулю 24 ч.
+        """
+        sun_ra = self.astronomy.solar_ra()
+        ltan_hours = (12 + (sat.raan - sun_ra) / 15.0) % 24.0
+        total_minutes = int(round(ltan_hours * 60)) % (24 * 60)
+        return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+    def _esp_rotations(self, sat) -> str:
+        return str(self.satellites.total_rotations(sat))
 
     def _sorted_table_satellites(self):
         """Возвращает видимые спутники в порядке сортировки таблицы."""
@@ -910,9 +1135,11 @@ class MainWidget(QWidget):
         self.last_update = now
 
         self.satellites.update()
-
         if self.map_options.get("show_day_night", True):
             self.night_mask = self.create_night_mask()
+
+        if self._update_esp_pass_tracking():
+            self.request_esp_send()
 
         self.update()
 
@@ -1402,11 +1629,16 @@ class MainWidget(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.setPen(Qt.white)
 
-            painter.drawText(48, row_y, sat.name)
+            name_rect = QRectF(55, row_y - 16, 160 - 55 - 8, 20)
+            painter.drawText(
+                name_rect,
+                Qt.AlignLeft | Qt.AlignVCenter,
+                painter.fontMetrics().elidedText(sat.name, Qt.ElideRight, int(name_rect.width()))
+            )
 
-            painter.drawText(155, row_y, str(sat.norad))
+            painter.drawText(160, row_y, str(sat.norad))
 
-            x = 245
+            x = 235
 
             # Основная высота
             text = f"{sat.mean_altitude:.1f} км"
@@ -1427,26 +1659,26 @@ class MainWidget(QWidget):
             painter.setPen(Qt.white)
 
             painter.drawText(
-                390,
+                350,
                 row_y,
                 f"{sat.altitude:.1f} км"
             )
 
             painter.drawText(
-                475,
+                440,
                 row_y,
                 f"{sat.period:.2f} мин"
             )
 
             inclination_text = f"{sat.inclination:.2f}°"
             painter.drawText(
-                565,
+                530,
                 row_y,
                 inclination_text
             )
             self.draw_history_delta(
                 painter,
-                565 + metrics.horizontalAdvance(inclination_text) + 6,
+                530 + metrics.horizontalAdvance(inclination_text) + 6,
                 row_y,
                 sat.inclination_change_72h,
                 precision=2,
@@ -1455,15 +1687,17 @@ class MainWidget(QWidget):
 
             raan_text = f"{sat.raan:.2f}°"
             painter.setPen(Qt.white)
-            painter.drawText(715, row_y, raan_text)
+            painter.drawText(650, row_y, raan_text)
             self.draw_history_delta(
                 painter,
-                715 + metrics.horizontalAdvance(raan_text) + 4,
+                650 + metrics.horizontalAdvance(raan_text) + 4,
                 row_y,
                 sat.raan_change_per_day,
                 precision=2,
                 colored=False
             )
+
+            painter.drawText(755, row_y, self._esp_ltan(sat))
 
             if sat.next_pass:
                 value = self.format_next_pass(sat)

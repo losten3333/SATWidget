@@ -65,6 +65,37 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(entry["color"], "#00FF00")
         self.assertTrue(entry["enabled"])
         self.assertTrue(entry["map_visible"])
+        self.assertFalse(entry["esp_transmit"])
+
+    def test_set_satellite_esp_transmit_is_saved(self):
+        data = {
+            "display": {},
+            "observer": {},
+            "tle": {},
+            "satellites": [{"norad": 25544, "esp_transmit": False}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            config = Config(path)
+            config.set_satellite_esp_transmit(25544, True)
+            reloaded = Config(path)
+
+        self.assertTrue(reloaded.satellites[0]["esp_transmit"])
+
+    def test_set_satellite_esp_transmit_missing_raises(self):
+        data = {
+            "display": {},
+            "observer": {},
+            "tle": {},
+            "satellites": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            config = Config(path)
+            with self.assertRaises(ValueError):
+                config.set_satellite_esp_transmit(25544, True)
 
     def test_add_satellite_ignores_duplicate(self):
         data = {

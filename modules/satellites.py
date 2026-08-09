@@ -5,7 +5,6 @@ from enum import Enum
 
 from pathlib import Path
 from math import sqrt, pi, degrees, cos
-import requests
 from PySide6.QtGui import QColor
 
 from skyfield.api import EarthSatellite
@@ -13,6 +12,8 @@ from skyfield.api import load
 from skyfield.api import wgs84
 
 from dataclasses import dataclass, field
+
+from modules.chrome_cdp import ChromeCdpClient
 
 MU = 398600.4418  # км³/с²
 EARTH_RADIUS = 6378.137
@@ -35,6 +36,7 @@ class Satellite:
 
     enabled: bool = True
     map_visible: bool = True
+    esp_transmit: bool = False
 
     show_track: bool = True
     show_orbit: bool = True
@@ -247,6 +249,12 @@ class SatelliteManager:
         self.save_orbit_history()
 
     def download_sources(self):
+        try:
+            return self._download_sources()
+        finally:
+            self._close_chrome()
+
+    def _download_sources(self):
 
         providers = sorted(
             self.config.tle["providers"],
@@ -289,13 +297,9 @@ class SatelliteManager:
 
             try:
 
-                response = requests.get(
-                    provider["url"],
-                    params=provider.get("params"),
-                    timeout=20
+                text = self._chrome_client().get_text(
+                    provider["url"], provider.get("params")
                 )
-
-                response.raise_for_status()
 
                 cache.parent.mkdir(
                     parents=True,
@@ -303,7 +307,6 @@ class SatelliteManager:
                 )
 
                 if fmt == "tle":
-                    text = response.text
                     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
                     if len(lines) < 3 or not lines[1].startswith("1 "):
@@ -313,11 +316,16 @@ class SatelliteManager:
                     cache.write_text(text, encoding="utf-8")
 
                 elif fmt == "gp":
-                    data = response.json()
+                    if "GP data has not updated" in text:
+                        print(f'{provider["name"]}: данные не изменились')
+                        success = True
+                        satisfied_formats.add(fmt)
+                        continue
+                    data = json.loads(text)
                     if not isinstance(data, list):
                         print(f'{provider["name"]}: неверный GP')
                         continue
-                    cache.write_text(response.text, encoding="utf-8")
+                    cache.write_text(text, encoding="utf-8")
                 else:
                     print(f'Неизвестный формат {fmt}')
                     continue
@@ -330,6 +338,22 @@ class SatelliteManager:
                 print(e)
 
         return success
+
+    def _close_chrome(self):
+        chrome = getattr(self, "_chrome", None)
+        if chrome is not None:
+            chrome.close()
+
+    def _chrome_client(self):
+        if not hasattr(self, "_chrome"):
+            tle_config = self.config.tle or {}
+            self._chrome = ChromeCdpClient(
+                tle_config.get(
+                    "chrome_debug_url", "http://127.0.0.1:9222"
+                ),
+                auto_launch=tle_config.get("auto_start_chrome", True),
+            )
+        return self._chrome
 
     def _download_space_track(self, provider) -> bool:
         """
@@ -361,42 +385,17 @@ class SatelliteManager:
             print(f'{provider["name"]}: не задан параметр query')
             return False
 
-        with requests.Session() as session:
-
-            login_response = session.post(
-                base_url + "/ajaxauth/login",
-                data={"identity": username, "password": password},
-                timeout=20
+        try:
+            text = self._chrome_client().space_track_json(
+                base_url, query, username, password
             )
-            login_response.raise_for_status()
-
-            if "failed" in login_response.text.lower():
-                print(
-                    f'{provider["name"]}: не удалось войти '
-                    "(проверьте логин/пароль Space-Track)"
-                )
-                return False
-
-            response = session.get(
-                base_url + "/" + query,
-                timeout=60
-            )
-            response.raise_for_status()
-
-            data = response.json()
-
-            if not isinstance(data, list):
-                print(f'{provider["name"]}: неверный GP')
-                return False
-
             cache = Path(provider["cache"])
-            cache.parent.mkdir(
-                parents=True,
-                exist_ok=True
-            )
-            cache.write_text(response.text, encoding="utf-8")
-
-        return True
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(text, encoding="utf-8")
+            return True
+        except Exception as error:
+            print(f'{provider["name"]}: {error}')
+            return False
 
     def sources_are_outdated(self) -> bool:
         """
@@ -627,6 +626,7 @@ class SatelliteManager:
                 color=QColor(cfg["color"]),
                 enabled=cfg["enabled"],
                 map_visible=cfg.get("map_visible", cfg["enabled"]),
+                esp_transmit=cfg.get("esp_transmit", False),
                 show_track=cfg["show_track"],
                 show_orbit=cfg["show_orbit"],
                 show_label=cfg["show_label"]
@@ -1176,3 +1176,40 @@ class SatelliteManager:
 
         if now >= sat.next_pass:
             self.calculate_next_pass(sat)
+
+    def total_rotations(self, sat: Satellite) -> int:
+        """
+        Текущее число витков спутника с момента вывода на орбиту.
+
+        Начальное значение витков берётся из GP/TLE (REV_AT_EPOCH),
+        к которому добавляется число витков, пройденных после эпохи
+        элементов.
+        """
+        model = sat.model
+
+        if model is None:
+            return 0
+
+        epoch_year = model.model.epochyr
+        epoch_days = model.model.epochdays
+        revnum = getattr(model.model, "revnum", 0) or 0
+
+        if revnum <= 0 or not epoch_days:
+            return 0
+
+        year = 2000 + epoch_year if epoch_year < 57 else 1900 + epoch_year
+
+        try:
+            epoch = (
+                datetime(year, 1, 1, tzinfo=timezone.utc) +
+                timedelta(days=epoch_days - 1)
+            )
+        except (OverflowError, ValueError):
+            return 0
+
+        revolutions_per_day = model.model.no_kozai * 1440.0 / (2 * pi)
+        elapsed_days = (
+            datetime.now(timezone.utc) - epoch
+        ).total_seconds() / 86400.0
+
+        return int(revnum + elapsed_days * revolutions_per_day)

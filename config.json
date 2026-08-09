@@ -23,6 +23,8 @@
   },
   "tle": {
     "update_hours": 2,
+    "chrome_debug_url": "http://127.0.0.1:9222",
+    "auto_start_chrome": true,
     "cache": "data/tle.txt",
     "providers": [
       {
@@ -65,7 +67,8 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 59051,
@@ -75,17 +78,19 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 58435,
-      "name": "COSMOS 2572 (ОКР1)",
+      "name": "COSMOS 2572 (OKR1)",
       "color": "#FF05AA",
       "enabled": true,
-      "show_track": false,
+      "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 53370,
@@ -95,7 +100,8 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 67281,
@@ -105,7 +111,8 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 67272,
@@ -115,7 +122,8 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 67280,
@@ -125,7 +133,8 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 67261,
@@ -135,7 +144,8 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68360,
@@ -145,17 +155,19 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68361,
       "name": "RASSVET-3 2",
       "color": "#aafabf",
       "enabled": true,
-      "show_track": false,
+      "show_track": true,
       "show_orbit": true,
-      "show_label": false,
-      "map_visible": false
+      "show_label": true,
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68362,
@@ -165,7 +177,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68364,
@@ -175,7 +188,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68365,
@@ -185,7 +199,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68366,
@@ -195,7 +210,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68367,
@@ -205,7 +221,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68368,
@@ -215,7 +232,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68369,
@@ -225,7 +243,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68370,
@@ -235,7 +254,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68371,
@@ -245,7 +265,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68372,
@@ -255,7 +276,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68373,
@@ -265,17 +287,19 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68374,
       "name": "RASSVET-3 15",
       "color": "#09912d",
       "enabled": true,
-      "show_track": false,
+      "show_track": true,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 68375,
@@ -285,7 +309,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": false
+      "map_visible": false,
+      "esp_transmit": false
     },
     {
       "norad": 100083,
@@ -295,7 +320,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 100084,
@@ -305,7 +331,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 100085,
@@ -315,7 +342,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 100086,
@@ -325,7 +353,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 100087,
@@ -335,7 +364,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 100088,
@@ -345,7 +375,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 100089,
@@ -355,7 +386,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 100090,
@@ -365,7 +397,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     },
     {
       "norad": 100091,
@@ -375,7 +408,8 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true
+      "map_visible": true,
+      "esp_transmit": false
     }
   ]
 }

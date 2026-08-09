@@ -1,0 +1,13 @@
+# Arduino build artifacts
+build/
+*.o
+*.elf
+*.bin
+*.hex
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE local settings
+.idea/workspace.xml
