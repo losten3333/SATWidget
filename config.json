@@ -21,40 +21,25 @@
     "alt": 180,
     "timezone": "Europe/Moscow"
   },
+  "gp_receiver": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 9090,
+    "cache": "data/gp.json"
+  },
   "tle": {
     "update_hours": 2,
     "chrome_debug_url": "http://127.0.0.1:9222",
-    "auto_start_chrome": true,
+    "auto_start_chrome": false,
     "cache": "data/tle.txt",
     "providers": [
       {
-        "name": "Space-Track GP",
-        "type": "space_track",
+        "name": "Chrome-расширение GP",
+        "type": "file",
         "format": "gp",
         "enabled": true,
         "priority": 1,
-        "cache": "data/gp.json",
-        "url": "https://www.space-track.org",
-        "params": {
-          "query": "basicspacedata/query/class/gp/EPOCH/%3Enow-30/ORDERBY/NORAD_CAT_ID/format/json"
-        },
-        "auth": {
-          "user_env": "SPACE_TRACK_USER",
-          "password_env": "SPACE_TRACK_PASSWORD"
-        }
-      },
-      {
-        "name": "CelesTrak GP",
-        "type": "http",
-        "format": "gp",
-        "enabled": true,
-        "priority": 2,
-        "cache": "data/gp.json",
-        "url": "https://celestrak.org/NORAD/elements/gp.php",
-        "params": {
-          "GROUP": "active",
-          "FORMAT": "json"
-        }
+        "cache": "data/gp.json"
       }
     ]
   },
@@ -68,7 +53,7 @@
       "show_orbit": true,
       "show_label": true,
       "map_visible": true,
-      "esp_transmit": false
+      "esp_transmit": true
     },
     {
       "norad": 59051,
@@ -89,8 +74,8 @@
       "show_track": true,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true,
-      "esp_transmit": false
+      "map_visible": false,
+      "esp_transmit": true
     },
     {
       "norad": 53370,
@@ -99,9 +84,9 @@
       "enabled": true,
       "show_track": true,
       "show_orbit": true,
-      "show_label": true,
+      "show_label": false,
       "map_visible": true,
-      "esp_transmit": false
+      "esp_transmit": true
     },
     {
       "norad": 67281,
@@ -320,7 +305,7 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": true,
-      "map_visible": true,
+      "map_visible": false,
       "esp_transmit": false
     },
     {
@@ -330,8 +315,8 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": true,
-      "map_visible": true,
+      "show_label": false,
+      "map_visible": false,
       "esp_transmit": false
     },
     {
@@ -342,7 +327,7 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": true,
+      "map_visible": false,
       "esp_transmit": false
     },
     {
@@ -352,8 +337,8 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": true,
-      "map_visible": true,
+      "show_label": false,
+      "map_visible": false,
       "esp_transmit": false
     },
     {
@@ -363,8 +348,8 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": true,
-      "map_visible": true,
+      "show_label": false,
+      "map_visible": false,
       "esp_transmit": false
     },
     {
@@ -374,8 +359,8 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": true,
-      "map_visible": true,
+      "show_label": false,
+      "map_visible": false,
       "esp_transmit": false
     },
     {
@@ -385,8 +370,8 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": true,
-      "map_visible": true,
+      "show_label": false,
+      "map_visible": false,
       "esp_transmit": false
     },
     {
@@ -397,7 +382,7 @@
       "show_track": false,
       "show_orbit": true,
       "show_label": false,
-      "map_visible": true,
+      "map_visible": false,
       "esp_transmit": false
     },
     {
@@ -407,8 +392,8 @@
       "enabled": true,
       "show_track": false,
       "show_orbit": true,
-      "show_label": true,
-      "map_visible": true,
+      "show_label": false,
+      "map_visible": false,
       "esp_transmit": false
     }
   ]

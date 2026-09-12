@@ -307,8 +307,9 @@ static esp_err_t panel_sh8601_mirror(esp_lcd_panel_t *panel, bool mirror_x, bool
         sh8601->madctl_val &= ~BIT(6);
     }
     if (mirror_y) {
-        ESP_LOGE(TAG, "mirror_y is not supported by this panel");
-        ret = ESP_ERR_NOT_SUPPORTED;
+        sh8601->madctl_val |= BIT(7);
+    } else {
+        sh8601->madctl_val &= ~BIT(7);
     }
     ESP_RETURN_ON_ERROR(tx_param(sh8601, io, LCD_CMD_MADCTL, (uint8_t[]) {
         sh8601->madctl_val

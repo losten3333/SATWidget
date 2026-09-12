@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 SATELLITES = [
@@ -24,8 +25,8 @@ SATELLITES = [
     },
 ]
 
-IMAGE_WIDTH = 130
-IMAGE_HEIGHT = 130
+IMAGE_WIDTH = 150
+IMAGE_HEIGHT = 150
 IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT * 2
 IMAGE_DIRECTORY = Path(__file__).with_name("image")
 
@@ -36,6 +37,9 @@ BLE_TX_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 # A single GATT write is limited by the negotiated ATT MTU. bleak on Windows
 # keeps the default 23-byte MTU, so every write must stay at 20 bytes or less.
 BLE_CHUNK_SIZE = 20
+IMAGE_CHUNK_BYTES = 96
+BLE_IMAGE_BATCH_LINES = 12
+BLE_IMAGE_PACKET_PAUSE_SECONDS = 0.003
 
 
 class BleTransport:
@@ -56,6 +60,7 @@ class BleTransport:
         self.name = name
         self.timeout = timeout
         self._client = None
+        self._image_write_size = BLE_CHUNK_SIZE
         self._rx = queue.Queue()
         self._line = b""
         self.loop = asyncio.new_event_loop()
@@ -81,6 +86,12 @@ class BleTransport:
                 "Power the ESP32 on and check that it is in range.")
         self._client = self._BleakClient(device)
         await self._client.connect()
+        characteristic = self._client.services.get_characteristic(BLE_RX_UUID)
+        if characteristic is not None:
+            self._image_write_size = max(
+                BLE_CHUNK_SIZE,
+                min(512, characteristic.max_write_without_response_size),
+            )
         await self._client.start_notify(BLE_TX_UUID, self._on_notify)
 
     async def _disconnect(self):
@@ -88,15 +99,26 @@ class BleTransport:
             await self._client.disconnect()
 
     async def _write_all(self, data):
+        for offset in range(0, len(data), self._image_write_size):
+            chunk = bytes(data[offset:offset + self._image_write_size])
+            await self._client.write_gatt_char(BLE_RX_UUID, chunk, response=True)
+
+    async def _write_image_data(self, data):
         for offset in range(0, len(data), BLE_CHUNK_SIZE):
             chunk = bytes(data[offset:offset + BLE_CHUNK_SIZE])
-            await self._client.write_gatt_char(BLE_RX_UUID, chunk, response=True)
+            await self._client.write_gatt_char(BLE_RX_UUID, chunk, response=False)
+            if self._image_write_size <= BLE_CHUNK_SIZE:
+                await asyncio.sleep(BLE_IMAGE_PACKET_PAUSE_SECONDS)
 
     def _on_notify(self, _handle, data):
         self._rx.put(bytes(data))
 
     def write(self, data):
         self._call(self._write_all, data)
+
+    def write_image_data(self, data):
+        """Fast, bounded image-data transfer using Write Without Response."""
+        self._call(self._write_image_data, data)
 
     def flush(self):
         pass
@@ -183,16 +205,32 @@ def send_image(transport, norad):
         raise ValueError(f"{image_path} must be exactly {IMAGE_BYTES} bytes "
                          f"({IMAGE_WIDTH}x{IMAGE_HEIGHT} RGB565)")
 
-    transport.write(f"IMG_BEGIN|{norad}|{IMAGE_BYTES}\n".encode("ascii"))
+    transport.write(
+        f"IMG_BEGIN|{norad}|{IMAGE_BYTES}|{BLE_IMAGE_BATCH_LINES}\n".encode("ascii")
+    )
     transport.flush()
     wait_for_reply(transport, f"IMG_READY|{norad}")
-    # Keep each text line well below the ESP32 USB serial receive buffer.
-    # The acknowledgement also prevents consecutive lines from being merged.
-    for offset in range(0, len(image_data), 96):
-        chunk = base64.b64encode(image_data[offset:offset + 96])
-        transport.write(b"IMG_DATA|" + chunk + b"\n")
+    lines = [
+        b"IMG_DATA|" + base64.b64encode(
+            image_data[offset:offset + IMAGE_CHUNK_BYTES]
+        ) + b"\n"
+        for offset in range(0, len(image_data), IMAGE_CHUNK_BYTES)
+    ]
+    write_image_data = getattr(transport, "write_image_data", None)
+    next_progress_percent = 10
+    for start in range(0, len(lines), BLE_IMAGE_BATCH_LINES):
+        batch = lines[start:start + BLE_IMAGE_BATCH_LINES]
+        if write_image_data is None:
+            for line in batch:
+                transport.write(line)
+        else:
+            write_image_data(b"".join(batch))
         transport.flush()
         wait_for_reply(transport, "IMG_NEXT")
+        progress_percent = min(100, (start + len(batch)) * 100 // len(lines))
+        if progress_percent >= next_progress_percent or progress_percent == 100:
+            print(f"ESP32: image {norad}: {progress_percent}%")
+            next_progress_percent += 10
     transport.write(b"IMG_END\n")
     transport.flush()
     wait_for_reply(transport, f"IMG_OK|{norad}")
@@ -214,7 +252,7 @@ def local_image_ids():
 
 
 def send_snapshot(transport, minutes):
-    lines = ["BEGIN", f"CONFIG|{minutes}"]
+    lines = ["BEGIN", f"CONFIG|{minutes}", f"TIME|{datetime.now():%H:%M}"]
     lines.extend(sat_record(sat) for sat in SATELLITES)
     lines.append("END")
     transport.write(("\n".join(lines) + "\n").encode("utf-8"))

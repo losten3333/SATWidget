@@ -53,7 +53,7 @@ ESP32_SatWidget/
     45783.rgb565
 ```
 
-The file name is the satellite NORAD ID. Each file must be an uncompressed **130 x 130 px RGB565 little-endian (RGB565LE)** image, exactly **33,800 bytes**. The receiver swaps the two bytes of every pixel while saving it because the active LVGL configuration uses `LV_COLOR_16_SWAP = 1`.
+The file name is the satellite NORAD ID. Each file must be an uncompressed **150 x 150 px RGB565 little-endian (RGB565LE)** image, exactly **45,000 bytes**. The receiver swaps the two bytes of every pixel while saving it because the active LVGL configuration uses `LV_COLOR_16_SWAP = 1`.
 
 On every run, `satellite_sender.py` first sends `IMG_STATUS` and receives the NORAD IDs of images that are already stored in FFat. If every image found locally in `image/` is present on the ESP32, it sends only orbital text data. Otherwise it uploads the local image set and then sends the snapshot.
 
@@ -70,12 +70,13 @@ An empty snapshot (`BEGIN`, `CONFIG`, `END`) clears the selected satellites from
 ```text
 BEGIN
 CONFIG|1
+TIME|18:36
 SAT|KHAYYAM|52940|6 907,1 km (+0,4 km)|97 min 44 s|97,5 deg (+0,01 deg)|159,2 deg|00 h 27 min|19 842|10:30|#BF805B
 SAT|KANOPUS-V-6|45783|6 884,5 km (-0,2 km)|95 min 53 s|97,4 deg (-0,01 deg)|221,8 deg|03 h 12 min|32 614|09:45|#4777B8
 END
 ```
 
-`CONFIG` is the shared display duration per satellite in minutes (1…1440). The device answers `OK|<satellite_count>|<minutes>` after accepting the snapshot. A field may not contain `|` or a line break.
+`CONFIG` is the shared display duration per satellite in minutes (1…1440). `TIME` synchronizes the current local time displayed in the top-left corner; the ESP32 then advances it autonomously. The device answers `OK|<satellite_count>|<minutes>` after accepting the snapshot. A field may not contain `|` or a line break.
 
 The value after `LTAN` is a fallback colour (`#RRGGBB`) used only when no image for that NORAD ID is stored on the ESP32.
 

@@ -34,31 +34,30 @@ class ChromeCdpTests(unittest.TestCase):
 
     def test_ensure_chrome_running_launches_and_waits_for_port(self):
         client = ChromeCdpClient()
+        launched = []
         with mock.patch.object(
                 ChromeCdpClient, "_find_chrome",
                 return_value=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        ), mock.patch("modules.chrome_cdp.subprocess.Popen") as popen, \
-                mock.patch(
-                    "modules.chrome_cdp.urlopen",
-                    side_effect=[OSError, mock.MagicMock()],
-                ):
+        ), mock.patch.object(
+            ChromeCdpClient, "_port_is_ready", return_value=False,
+        ), mock.patch.object(
+            ChromeCdpClient, "_launch_on_port",
+            side_effect=lambda chrome, profile, port: launched.append(port) or True,
+        ):
             self.assertTrue(client._ensure_chrome_running())
-        args = popen.call_args[0][0]
-        self.assertIn("--remote-debugging-port=9222", args)
-        self.assertTrue(any(str(a).startswith("--user-data-dir=")
-                            and "chrome-debug-profile" in a for a in args))
+        self.assertIn(9222, launched)
+        self.assertEqual(client._debug_port(), 9222)
 
     def test_ensure_chrome_running_gives_up_when_port_stays_closed(self):
         client = ChromeCdpClient()
         with mock.patch.object(
                 ChromeCdpClient, "_find_chrome",
                 return_value=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        ), mock.patch("modules.chrome_cdp.subprocess.Popen"), \
-                mock.patch(
-                    "modules.chrome_cdp.urlopen",
-                    side_effect=OSError,
-                ), mock.patch("modules.chrome_cdp.time.monotonic",
-                              side_effect=[0.0, 15.1]):
+        ), mock.patch.object(
+            ChromeCdpClient, "_port_is_ready", return_value=False,
+        ), mock.patch.object(
+            ChromeCdpClient, "_launch_on_port", return_value=False,
+        ):
             self.assertFalse(client._ensure_chrome_running())
 
     def test_ensure_chrome_running_respects_auto_launch_off(self):
@@ -139,29 +138,34 @@ class ChromeCdpTests(unittest.TestCase):
 
     def test_ensure_chrome_running_again_after_close(self):
         client = ChromeCdpClient()
-        first = mock.MagicMock()
-        first.poll.return_value = 0
+        launched = []
         with mock.patch.object(
                 ChromeCdpClient, "_find_chrome",
                 return_value=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        ), mock.patch(
-            "modules.chrome_cdp.subprocess.Popen", return_value=first,
-        ), mock.patch("modules.chrome_cdp.urlopen", return_value=mock.MagicMock()):
+        ), mock.patch.object(
+            ChromeCdpClient, "_port_is_ready", return_value=False,
+        ), mock.patch.object(
+            ChromeCdpClient, "_launch_on_port",
+            side_effect=lambda chrome, profile, port: launched.append(port) or True,
+        ):
             self.assertTrue(client._ensure_chrome_running())
+            self.assertTrue(client._launch_attempted)
 
         with mock.patch.object(client, "_close_page"):
             client.close()
+        self.assertFalse(client._launch_attempted)
 
-        second = mock.MagicMock()
-        second.poll.return_value = None
         with mock.patch.object(
                 ChromeCdpClient, "_find_chrome",
                 return_value=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        ), mock.patch(
-            "modules.chrome_cdp.subprocess.Popen", return_value=second,
-        ), mock.patch("modules.chrome_cdp.urlopen", return_value=mock.MagicMock()):
+        ), mock.patch.object(
+            ChromeCdpClient, "_port_is_ready", return_value=False,
+        ), mock.patch.object(
+            ChromeCdpClient, "_launch_on_port",
+            side_effect=lambda chrome, profile, port: launched.append(port) or True,
+        ):
             self.assertTrue(client._ensure_chrome_running())
-        self.assertIs(client._chrome_process, second)
+        self.assertEqual(len(launched), 2)
 
 
 if __name__ == "__main__":

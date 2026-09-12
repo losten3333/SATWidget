@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -10,10 +11,12 @@ class Esp32SnapshotTests(unittest.TestCase):
     def test_empty_snapshot_is_a_valid_clear_command(self):
         sender = Esp32Sender(minutes=1)
 
-        self.assertEqual(
-            sender._snapshot_lines([]),
-            ["BEGIN", "CONFIG|1", "END"],
-        )
+        with patch("modules.esp32_sender.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = datetime(2026, 8, 30, 18, 36)
+            self.assertEqual(
+                sender._snapshot_lines([]),
+                ["BEGIN", "CONFIG|1", "TIME|18:36", "END"],
+            )
 
     def test_image_transfer_uses_fast_method_when_transport_supports_it(self):
         class Transport:
@@ -45,7 +48,7 @@ class Esp32SnapshotTests(unittest.TestCase):
 
         sender = Esp32Sender()
         transport = Transport()
-        image = bytes(130 * 130 * 2)
+        image = bytes(150 * 150 * 2)
         sender._send_image(transport, "53370", image)
 
         self.assertGreater(len(transport.fast_lines), 1)
@@ -69,8 +72,8 @@ class Esp32SnapshotTests(unittest.TestCase):
     def test_template_is_temporary_and_real_image_replaces_it(self):
         with TemporaryDirectory() as directory:
             images = Path(directory)
-            template = bytes([1]) * (130 * 130 * 2)
-            real = bytes([2]) * (130 * 130 * 2)
+            template = bytes([1]) * (150 * 150 * 2)
+            real = bytes([2]) * (150 * 150 * 2)
             (images / "template.rgb565").write_bytes(template)
 
             with patch("modules.esp32_sender.IMAGE_DIRECTORY", images):

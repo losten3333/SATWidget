@@ -214,196 +214,124 @@ class SatelliteTests(unittest.TestCase):
         self.assertAlmostEqual(second.inclination_change_72h, 0.05)
 
 
-class SpaceTrackDownloadTests(unittest.TestCase):
-    def setUp(self):
-        self.provider = {
-            "name": "Space-Track GP",
-            "type": "space_track",
-            "format": "gp",
-            "cache": "data/gp.json",
-            "url": "https://www.space-track.org",
-            "params": {
-                "query": "basicspacedata/query/class/gp/"
-                         "OBJECT_TYPE/PAYLOAD/EPOCH/%3Enow-30/"
-                         "ORDERBY/NORAD_CAT_ID/format/json"
-            },
-            "auth": {"user_env": "ST_USER", "password_env": "ST_PASS"},
-        }
+class FileProviderDownloadTests(unittest.TestCase):
+    """Обновление GP/TLE теперь выполняет расширение Chrome, а приложение
+    просто проверяет наличие свежего кэш-файла (провайдер type=file)."""
 
-    def test_download_requires_credentials(self):
-        with patch.dict(os.environ, {}, clear=True):
-            manager = SatelliteManager.__new__(SatelliteManager)
-            self.assertFalse(manager._download_space_track(self.provider))
+    def make_manager(self, providers, directory):
+        manager = SatelliteManager.__new__(SatelliteManager)
+        manager.config = SimpleNamespace(tle={"providers": providers})
+        return manager
 
-    def test_download_writes_cache(self):
-        payload = [{"NORAD_CAT_ID": 25544, "OBJECT_NAME": "ISS"}]
-
-        with patch.dict(
-                os.environ,
-                {"ST_USER": "user", "ST_PASS": "pass"},
-                clear=True
-        ):
-            with tempfile.TemporaryDirectory() as directory:
-                provider = dict(self.provider)
-                provider["cache"] = str(Path(directory) / "gp.json")
-                manager = SatelliteManager.__new__(SatelliteManager)
-                chrome = Mock(space_track_json=Mock(return_value=json.dumps(payload)))
-                manager._chrome = chrome
-
-                self.assertTrue(manager._download_space_track(provider))
-                chrome.space_track_json.assert_called_once()
-                written = json.loads(
-                    Path(provider["cache"]).read_text(encoding="utf-8")
-                )
-                self.assertEqual(written, payload)
-
-    def test_download_fails_on_bad_login(self):
-        with patch.dict(
-                os.environ,
-                {"ST_USER": "user", "ST_PASS": "wrong"},
-                clear=True
-        ):
-            manager = SatelliteManager.__new__(SatelliteManager)
-            manager._chrome = Mock(
-                space_track_json=Mock(side_effect=RuntimeError("bad login"))
-            )
-            self.assertFalse(manager._download_space_track(self.provider))
-
-    def test_download_sources_closes_chrome_after_update(self):
+    def test_download_sources_success_when_file_exists(self):
         providers = [
             {
-                "name": "CelesTrak GP",
-                "type": "http",
+                "name": "Chrome-расширение GP",
+                "type": "file",
                 "format": "gp",
                 "enabled": True,
                 "priority": 1,
                 "cache": "data/gp.json",
-                "url": "https://celestrak.org/NORAD/elements/gp.php",
-                "params": {"GROUP": "active", "FORMAT": "json"},
             },
         ]
-
-        chrome = Mock()
-        chrome.get_text.return_value = '[{"NORAD_CAT_ID": 25544}]'
-
-        manager = SatelliteManager.__new__(SatelliteManager)
-        manager.config = SimpleNamespace(tle={"providers": providers})
-        manager._chrome = chrome
-
-        with tempfile.TemporaryDirectory() as directory:
-            providers[0]["cache"] = str(Path(directory) / "gp.json")
-            self.assertTrue(manager.download_sources())
-        chrome.close.assert_called_once()
-
-    def test_download_sources_closes_chrome_even_on_failure(self):
-        providers = [
-            {
-                "name": "CelesTrak GP",
-                "type": "http",
-                "format": "gp",
-                "enabled": True,
-                "priority": 1,
-                "cache": "data/gp.json",
-                "url": "https://celestrak.org/NORAD/elements/gp.php",
-                "params": {"GROUP": "active", "FORMAT": "json"},
-            },
-        ]
-
-        chrome = Mock()
-        chrome.get_text.side_effect = RuntimeError("network down")
-
-        manager = SatelliteManager.__new__(SatelliteManager)
-        manager.config = SimpleNamespace(tle={"providers": providers})
-        manager._chrome = chrome
-
-        with tempfile.TemporaryDirectory() as directory:
-            providers[0]["cache"] = str(Path(directory) / "gp.json")
-            self.assertFalse(manager.download_sources())
-        chrome.close.assert_called_once()
-
-    def test_download_sources_accepts_celestrak_not_updated_message(self):
-        providers = [
-            {
-                "name": "CelesTrak GP",
-                "type": "http",
-                "format": "gp",
-                "enabled": True,
-                "priority": 1,
-                "cache": "data/gp.json",
-                "url": "https://celestrak.org/NORAD/elements/gp.php",
-                "params": {"GROUP": "active", "FORMAT": "json"},
-            },
-        ]
-
-        manager = SatelliteManager.__new__(SatelliteManager)
-        manager.config = SimpleNamespace(tle={"providers": providers})
-        manager._chrome = Mock(get_text=Mock(return_value=(
-            "GP data has not updated since your last successful\n"
-            "download of GROUP=active at 2026-08-09"
-        )))
-
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory) / "gp.json"
-            providers[0]["cache"] = str(cache)
             cache.write_text('[{"NORAD_CAT_ID": 25544}]', encoding="utf-8")
-
+            providers[0]["cache"] = str(cache)
+            manager = self.make_manager(providers, directory)
             self.assertTrue(manager.download_sources())
             self.assertEqual(
                 json.loads(cache.read_text(encoding="utf-8")),
                 [{"NORAD_CAT_ID": 25544}],
             )
 
-    def test_download_sources_skips_lower_priority_same_format(self):
+    def test_download_sources_failure_when_file_missing(self):
         providers = [
             {
-                "name": "Space-Track GP",
-                "type": "space_track",
+                "name": "Chrome-расширение GP",
+                "type": "file",
                 "format": "gp",
                 "enabled": True,
                 "priority": 1,
                 "cache": "data/gp.json",
-                "url": "https://www.space-track.org",
-                "params": {"query": "basicspacedata/query/class/gp/format/json"},
-                "auth": {"user_env": "ST_USER", "password_env": "ST_PASS"},
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            providers[0]["cache"] = str(Path(directory) / "gp.json")
+            manager = self.make_manager(providers, directory)
+            self.assertFalse(manager.download_sources())
+
+    def test_download_sources_skips_disabled_provider(self):
+        providers = [
+            {
+                "name": "Chrome-расширение GP",
+                "type": "file",
+                "format": "gp",
+                "enabled": False,
+                "priority": 1,
+                "cache": "data/gp.json",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            providers[0]["cache"] = str(Path(directory) / "gp.json")
+            manager = self.make_manager(providers, directory)
+            self.assertFalse(manager.download_sources())
+
+    def test_download_sources_skips_lower_priority_same_format(self):
+        providers = [
+            {
+                "name": "Основной",
+                "type": "file",
+                "format": "gp",
+                "enabled": True,
+                "priority": 1,
+                "cache": "data/gp.json",
             },
             {
-                "name": "CelesTrak GP",
-                "type": "http",
+                "name": "Резервный",
+                "type": "file",
                 "format": "gp",
                 "enabled": True,
                 "priority": 2,
-                "cache": "data/gp.json",
-                "url": "https://celestrak.org/NORAD/elements/gp.php",
-                "params": {"GROUP": "active", "FORMAT": "json"},
+                "cache": "data/backup_gp.json",
             },
         ]
-
-        payload = [{"NORAD_CAT_ID": 25544}]
-
-        manager = SatelliteManager.__new__(SatelliteManager)
-        manager.config = SimpleNamespace(tle={"providers": providers})
-        manager._chrome = Mock(
-            space_track_json=Mock(return_value=json.dumps(payload)),
-            get_text=Mock(side_effect=AssertionError("fallback must not run")),
-        )
-
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory) / "gp.json"
+            cache.write_text('[{"NORAD_CAT_ID": 25544}]', encoding="utf-8")
             providers[0]["cache"] = str(cache)
-            providers[1]["cache"] = str(cache)
+            providers[1]["cache"] = str(Path(directory) / "backup_gp.json")
+            manager = self.make_manager(providers, directory)
+            self.assertTrue(manager.download_sources())
+            # Резервный формат gp не рассматриваем (уже удовлетворён).
+            self.assertFalse(Path(providers[1]["cache"]).exists())
 
-            with patch.dict(
-                    os.environ,
-                    {"ST_USER": "user", "ST_PASS": "pass"},
-                    clear=True
-            ):
-                self.assertTrue(manager.download_sources())
-                manager._chrome.get_text.assert_not_called()
+    def test_sources_are_outdated_depends_on_mtime(self):
+        providers = [
+            {
+                "name": "Chrome-расширение GP",
+                "type": "file",
+                "format": "gp",
+                "enabled": True,
+                "priority": 1,
+                "cache": "data/gp.json",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "gp.json"
+            cache.write_text('[{"NORAD_CAT_ID": 25544}]', encoding="utf-8")
+            providers[0]["cache"] = str(cache)
 
-            self.assertEqual(
-                json.loads(cache.read_text(encoding="utf-8")),
-                payload
-            )
+            manager = SatelliteManager.__new__(SatelliteManager)
+            manager.config = SimpleNamespace(tle={"providers": providers})
+            manager.tle_update_interval = timedelta(hours=2)
+
+            self.assertFalse(manager.sources_are_outdated())
+
+            # Откатываем mtime в прошлое — файл становится устаревшим.
+            old = datetime.now() - timedelta(hours=3)
+            os.utime(cache, (old.timestamp(), old.timestamp()))
+            self.assertTrue(manager.sources_are_outdated())
 
 
 class SatelliteAddRemoveTests(unittest.TestCase):

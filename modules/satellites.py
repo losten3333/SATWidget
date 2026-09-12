@@ -1,5 +1,4 @@
 import json
-import os
 from datetime import timedelta, datetime, timezone
 from enum import Enum
 
@@ -12,8 +11,6 @@ from skyfield.api import load
 from skyfield.api import wgs84
 
 from dataclasses import dataclass, field
-
-from modules.chrome_cdp import ChromeCdpClient
 
 MU = 398600.4418  # км³/с²
 EARTH_RADIUS = 6378.137
@@ -249,10 +246,7 @@ class SatelliteManager:
         self.save_orbit_history()
 
     def download_sources(self):
-        try:
-            return self._download_sources()
-        finally:
-            self._close_chrome()
+        return self._download_sources()
 
     def _download_sources(self):
 
@@ -281,121 +275,16 @@ class SatelliteManager:
             if provider["type"] == "file":
 
                 if cache.exists():
+                    print(f'{provider["name"]}: файл на месте, данные актуальны')
                     success = True
                     satisfied_formats.add(fmt)
 
                 continue
 
-            if provider["type"] == "space_track":
-
-                if self._download_space_track(provider):
-                    print(f'{provider["name"]}: OK')
-                    success = True
-                    satisfied_formats.add(fmt)
-
-                continue
-
-            try:
-
-                text = self._chrome_client().get_text(
-                    provider["url"], provider.get("params")
-                )
-
-                cache.parent.mkdir(
-                    parents=True,
-                    exist_ok=True
-                )
-
-                if fmt == "tle":
-                    lines = [line.strip() for line in text.splitlines() if line.strip()]
-
-                    if len(lines) < 3 or not lines[1].startswith("1 "):
-                        print(f'{provider["name"]}: неверный TLE')
-                        continue
-
-                    cache.write_text(text, encoding="utf-8")
-
-                elif fmt == "gp":
-                    if "GP data has not updated" in text:
-                        print(f'{provider["name"]}: данные не изменились')
-                        success = True
-                        satisfied_formats.add(fmt)
-                        continue
-                    data = json.loads(text)
-                    if not isinstance(data, list):
-                        print(f'{provider["name"]}: неверный GP')
-                        continue
-                    cache.write_text(text, encoding="utf-8")
-                else:
-                    print(f'Неизвестный формат {fmt}')
-                    continue
-                print(f'{provider["name"]}: OK')
-                success = True
-                satisfied_formats.add(fmt)
-
-            except Exception as e:
-                print(provider["name"])
-                print(e)
+            print(f"{provider['name']}: неизвестный тип «{provider['type']}», "
+                  f"обновление GP/TLE теперь выполняет расширение Chrome")
 
         return success
-
-    def _close_chrome(self):
-        chrome = getattr(self, "_chrome", None)
-        if chrome is not None:
-            chrome.close()
-
-    def _chrome_client(self):
-        if not hasattr(self, "_chrome"):
-            tle_config = self.config.tle or {}
-            self._chrome = ChromeCdpClient(
-                tle_config.get(
-                    "chrome_debug_url", "http://127.0.0.1:9222"
-                ),
-                auto_launch=tle_config.get("auto_start_chrome", True),
-            )
-        return self._chrome
-
-    def _download_space_track(self, provider) -> bool:
-        """
-        Скачивает GP-данные с Space-Track.
-
-        Требует авторизации: логин/пароль берутся из переменных окружения
-        (по умолчанию SPACE_TRACK_USER / SPACE_TRACK_PASSWORD), чтобы не
-        хранить учётные данные в config.json.
-        """
-
-        auth = provider.get("auth", {})
-        user_env = auth.get("user_env", "SPACE_TRACK_USER")
-        password_env = auth.get("password_env", "SPACE_TRACK_PASSWORD")
-
-        username = os.environ.get(user_env, "")
-        password = os.environ.get(password_env, "")
-
-        if not username or not password:
-            print(
-                f'{provider["name"]}: не заданы учётные данные Space-Track '
-                f"(переменные окружения {user_env} / {password_env})"
-            )
-            return False
-
-        base_url = provider["url"].rstrip("/")
-        query = provider.get("params", {}).get("query")
-
-        if not query:
-            print(f'{provider["name"]}: не задан параметр query')
-            return False
-
-        try:
-            text = self._chrome_client().space_track_json(
-                base_url, query, username, password
-            )
-            cache = Path(provider["cache"])
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(text, encoding="utf-8")
-            return True
-        except Exception as error:
-            print(f'{provider["name"]}: {error}')
-            return False
 
     def sources_are_outdated(self) -> bool:
         """

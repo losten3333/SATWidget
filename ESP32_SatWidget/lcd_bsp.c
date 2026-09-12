@@ -61,6 +61,9 @@ void lcd_lvgl_Init(void)
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_new_panel_sh8601(io_handle, &panel_config, &g_panel_handle));
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_reset(g_panel_handle));
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_init(g_panel_handle));
+  // Rotate the complete rendered interface by 180 degrees for its physical
+  // orientation in the enclosure.
+  ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_mirror(g_panel_handle, true, true));
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(g_panel_handle, true));
 
   lv_init();
@@ -183,8 +186,9 @@ static void example_lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
   uint8_t win = getTouch(&tp_x,&tp_y);
   if(win)
   {
-    data->point.x = tp_x;
-    data->point.y = tp_y;
+    // Touch coordinates must use the same 180-degree orientation as display.
+    data->point.x = EXAMPLE_LCD_H_RES - 1 - tp_x;
+    data->point.y = EXAMPLE_LCD_V_RES - 1 - tp_y;
     data->state = LV_INDEV_STATE_PRESSED;
   }
   else

@@ -12,16 +12,21 @@
 // A received END atomically replaces the displayed satellite set.
 constexpr uint8_t MAX_SATELLITES = 8;
 constexpr uint32_t OFFLINE_AFTER_MS = 24UL * 60UL * 60UL * 1000UL;
-constexpr uint16_t IMAGE_WIDTH = 130;
-constexpr uint16_t IMAGE_HEIGHT = 130;
+constexpr uint16_t IMAGE_WIDTH = 150;
+constexpr uint16_t IMAGE_HEIGHT = 150;
 constexpr size_t IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT * 2;
+// Source files are displayed at their native 150x150 size.
+constexpr uint16_t DISPLAY_IMAGE_SIZE = 150;
+constexpr const lv_font_t *PARAMETER_FONT = &lv_font_montserrat_20;
+constexpr uint8_t ACTIVE_HIGH_PINS[] = {12, 13, 23, 6};
+constexpr uint32_t ACTIVE_HIGH_DELAY_MS = 60UL * 1000UL;
 
 // BLE UART (Nordic UART Service). Same text protocol as USB CDC.
 constexpr const char *BLE_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
 constexpr const char *BLE_CHARACTERISTIC_UUID_RX = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
 constexpr const char *BLE_CHARACTERISTIC_UUID_TX = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
 constexpr size_t BLE_TX_CHUNK_SIZE = 20;
-constexpr size_t BLE_RX_BUFFER_SIZE = 1024;
+constexpr size_t BLE_RX_BUFFER_SIZE = 4096;
 
 struct Satellite {
   String name;
@@ -52,6 +57,9 @@ bool ffatReady = false;
 bool receivingImage = false;
 String incomingImageNorad;
 size_t incomingImageBytes = 0;
+uint16_t incomingImageChunkCount = 0;
+uint8_t incomingImageAckWindow = 1;
+bool activeHighPinsEnabled = false;
 File incomingImageFile;
 uint8_t *satelliteImageData = nullptr;
 String loadedImageNorad;
@@ -67,9 +75,14 @@ volatile uint16_t bleRxTail = 0;
 lv_obj_t *statusIndicator;
 lv_obj_t *satelliteIcon;
 lv_obj_t *satelliteCounterLabel;
+lv_obj_t *timeLabel;
 lv_obj_t *nameLabel;
 lv_obj_t *noradLabel;
 lv_obj_t *valueLabels[7];
+lv_obj_t *captionLabels[7];
+int16_t clockMinutes = -1;
+int16_t lastRenderedClockMinutes = -1;
+uint32_t clockSyncedMs = 0;
 
 const char *FIELD_LABELS[] = {
   "SMA:", "PER:", "INCL:", "RAAN:", "PASS:", "ROT:", "LTAN:"
@@ -138,6 +151,8 @@ class SatWidgetRxCallbacks : public BLECharacteristicCallbacks {
 
 void initBle() {
   BLEDevice::init("ESP32_SatWidget");
+  // Let a central negotiate large GATT packets for image transfer.
+  BLEDevice::setMTU(517);
   bleServer = BLEDevice::createServer();
   bleServer->setCallbacks(new SatWidgetServerCallbacks());
   BLEService *service = bleServer->createService(BLE_SERVICE_UUID);
@@ -171,6 +186,49 @@ void makeLargeWhiteLabel(lv_obj_t *label) {
   lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
 }
 
+void makeCardLabel(lv_obj_t *label, const lv_font_t *font) {
+  lv_obj_set_style_text_color(label, lv_color_black(), 0);
+  lv_obj_set_style_text_font(label, font, 0);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+}
+
+void setCardValueText(lv_obj_t *label, const String &text) {
+  // Every orbital parameter uses one fixed readable size.  20px keeps the
+  // longest current SMA/INCL/RAAN strings inside their cards.
+  lv_obj_set_style_text_font(label, PARAMETER_FONT, 0);
+  lv_label_set_text(label, text.c_str());
+}
+
+lv_obj_t *createCard(lv_obj_t *screen, int16_t x, int16_t y,
+                     int16_t width, int16_t height, uint32_t color) {
+  lv_obj_t *card = lv_obj_create(screen);
+  lv_obj_set_pos(card, x, y);
+  lv_obj_set_size(card, width, height);
+  lv_obj_set_style_bg_color(card, lv_color_hex(color), 0);
+  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(card, lv_color_black(), 0);
+  lv_obj_set_style_border_width(card, 2, 0);
+  lv_obj_set_style_radius(card, 0, 0);
+  // lv_obj_create() adds 10px default padding.  Children of the small cards
+  // were therefore clipped to a tiny inner area; cards use absolute layout.
+  lv_obj_set_style_pad_all(card, 0, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+  return card;
+}
+
+void renderClock() {
+  if (timeLabel == nullptr || clockMinutes < 0) return;
+  const uint32_t elapsedMinutes = (millis() - clockSyncedMs) / 60000UL;
+  const int16_t displayed = (clockMinutes + elapsedMinutes) % (24 * 60);
+  if (displayed == lastRenderedClockMinutes) return;
+  if (!example_lvgl_lock(-1)) return;
+  lv_label_set_text_fmt(timeLabel, "%02d:%02d", displayed / 60, displayed % 60);
+  example_lvgl_unlock();
+  lastRenderedClockMinutes = displayed;
+}
+
 void previousSatelliteButtonEvent(lv_event_t *event) {
   pendingSatelliteStep = -1;
 }
@@ -181,10 +239,11 @@ void nextSatelliteButtonEvent(lv_event_t *event) {
 
 void createNavigationButton(lv_obj_t *screen, int16_t hitboxX, int16_t visualX,
                             const char *symbol, lv_event_cb_t callback) {
-  // A large transparent button makes the small visual control easy to tap.
+  // Keep the tappable areas at the screen edges to leave the centre free for
+  // the larger satellite image.
   lv_obj_t *hitbox = lv_btn_create(screen);
-  lv_obj_set_pos(hitbox, hitboxX, 38);
-  lv_obj_set_size(hitbox, 70, 130);
+  lv_obj_set_pos(hitbox, hitboxX, 35);
+  lv_obj_set_size(hitbox, 55, 135);
   lv_obj_set_style_bg_opa(hitbox, LV_OPA_TRANSP, 0);
   lv_obj_set_style_bg_opa(hitbox, LV_OPA_TRANSP, LV_STATE_PRESSED);
   lv_obj_set_style_border_width(hitbox, 0, 0);
@@ -193,7 +252,7 @@ void createNavigationButton(lv_obj_t *screen, int16_t hitboxX, int16_t visualX,
   lv_obj_add_event_cb(hitbox, callback, LV_EVENT_CLICKED, nullptr);
 
   lv_obj_t *button = lv_obj_create(hitbox);
-  lv_obj_set_pos(button, visualX - hitboxX, 48);
+  lv_obj_set_pos(button, visualX - hitboxX, 50);
   lv_obj_set_size(button, 34, 34);
   lv_obj_set_style_bg_color(button, lv_color_hex(0x303030), 0);
   lv_obj_set_style_bg_opa(button, LV_OPA_70, 0);
@@ -294,11 +353,6 @@ bool loadSatelliteImage(const String &norad) {
 void renderCurrentSatellite() {
   if (!example_lvgl_lock(-1)) return;
 
-  const bool isOffline = !haveSnapshot ||
-    (uint32_t)(millis() - lastSuccessfulUpdateMs) >= OFFLINE_AFTER_MS;
-  lv_obj_set_style_bg_color(statusIndicator,
-    isOffline ? lv_color_hex(0xF02B2B) : lv_color_hex(0x20B850), 0);
-
   if (!haveSnapshot || satelliteCount == 0) {
     lv_obj_set_style_bg_color(satelliteIcon, lv_color_hex(0x303030), 0);
     clearSatelliteImage();
@@ -311,14 +365,16 @@ void renderCurrentSatellite() {
   }
 
   const Satellite &sat = satellites[currentSatellite];
-  lv_obj_set_style_bg_color(satelliteIcon, sat.color, 0);
+  // The satellite colour used to become an opaque red frame for KHAYYAM
+  // around transparent pixels in its image.  Keep the image area black.
+  lv_obj_set_style_bg_color(satelliteIcon, lv_color_black(), 0);
   loadSatelliteImage(sat.norad);
   lv_label_set_text_fmt(satelliteCounterLabel, "%u/%u", currentSatellite + 1, satelliteCount);
   setLabelText(nameLabel, sat.name);
-  setLabelText(noradLabel, "NORAD " + sat.norad);
+  setLabelText(noradLabel, "ID " + sat.norad);
   const String values[] = {sat.sma, sat.period, sat.incl, sat.raan,
                            sat.pass, sat.rotations, sat.ltan};
-  for (uint8_t i = 0; i < 7; ++i) setLabelText(valueLabels[i], values[i]);
+  for (uint8_t i = 0; i < 7; ++i) setCardValueText(valueLabels[i], values[i]);
   example_lvgl_unlock();
 }
 
@@ -327,58 +383,83 @@ void createWidget() {
   lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
   lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
 
-  statusIndicator = lv_obj_create(screen);
-  lv_obj_set_pos(statusIndicator, 12, 12);
-  lv_obj_set_size(statusIndicator, 12, 12);
-  lv_obj_set_style_radius(statusIndicator, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_border_width(statusIndicator, 0, 0);
-  lv_obj_clear_flag(statusIndicator, LV_OBJ_FLAG_SCROLLABLE);
+  timeLabel = lv_label_create(screen);
+  lv_obj_set_pos(timeLabel, 10, 7);
+  lv_obj_set_width(timeLabel, 110);
+  lv_obj_set_style_text_color(timeLabel, lv_color_white(), 0);
+  lv_obj_set_style_text_font(timeLabel, &lv_font_montserrat_18, 0);
+  lv_label_set_text(timeLabel, "--:--");
 
+  // The count and status dot are deliberately hidden in the card layout;
+  // the upper-left area is reserved for the current time like the mock-up.
   satelliteCounterLabel = lv_label_create(screen);
-  lv_obj_set_pos(satelliteCounterLabel, 75, 8);
-  lv_obj_set_width(satelliteCounterLabel, 130);
-  lv_obj_set_style_text_align(satelliteCounterLabel, LV_TEXT_ALIGN_CENTER, 0);
-  makeLargeWhiteLabel(satelliteCounterLabel);
+  lv_obj_add_flag(satelliteCounterLabel, LV_OBJ_FLAG_HIDDEN);
 
   satelliteIcon = lv_img_create(screen);
-  lv_obj_set_pos(satelliteIcon, 75, 38);
-  lv_obj_set_size(satelliteIcon, 130, 130);
+  lv_obj_set_pos(satelliteIcon, 65, 34);
+  lv_obj_set_size(satelliteIcon, DISPLAY_IMAGE_SIZE, DISPLAY_IMAGE_SIZE);
+  lv_img_set_zoom(satelliteIcon, LV_IMG_ZOOM_NONE);
   lv_obj_set_style_radius(satelliteIcon, 4, 0);
   lv_obj_set_style_border_width(satelliteIcon, 0, 0);
-  lv_obj_set_style_bg_opa(satelliteIcon, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(satelliteIcon, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(satelliteIcon, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(satelliteIcon, LV_OBJ_FLAG_SCROLLABLE);
 
-  createNavigationButton(screen, 0, 12, "<", previousSatelliteButtonEvent);
-  createNavigationButton(screen, 210, 212, ">", nextSatelliteButtonEvent);
+  createNavigationButton(screen, 0, 2, "<", previousSatelliteButtonEvent);
+  // Keep the visual button inside the visible 280px panel area; its hitbox
+  // remains at the edge, while the icon itself no longer clips on the right.
+  createNavigationButton(screen, 220, 220, ">", nextSatelliteButtonEvent);
 
-  nameLabel = lv_label_create(screen);
-  lv_obj_set_width(nameLabel, 256);
-  lv_obj_set_pos(nameLabel, 12, 177);
+  lv_obj_t *nameCard = createCard(screen, 8, 190, 264, 31, 0xFFCB1A);
+  nameLabel = lv_label_create(nameCard);
+  lv_obj_set_pos(nameLabel, 3, 0);
+  lv_obj_set_width(nameLabel, 258);
   lv_obj_set_style_text_align(nameLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_long_mode(nameLabel, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_color(nameLabel, lv_color_white(), 0);
-  lv_obj_set_style_text_font(nameLabel, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(nameLabel, lv_color_black(), 0);
+  lv_obj_set_style_text_font(nameLabel, &lv_font_montserrat_26, 0);
 
-  noradLabel = lv_label_create(screen);
-  lv_obj_set_width(noradLabel, 256);
-  lv_obj_set_pos(noradLabel, 12, 207);
+  lv_obj_t *idCard = createCard(screen, 8, 222, 264, 28, 0xFF822A);
+  noradLabel = lv_label_create(idCard);
+  lv_obj_set_pos(noradLabel, 3, 3);
+  lv_obj_set_width(noradLabel, 258);
   lv_obj_set_style_text_align(noradLabel, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(noradLabel, lv_color_white(), 0);
-  lv_obj_set_style_text_font(noradLabel, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(noradLabel, lv_color_black(), 0);
+  lv_obj_set_style_text_font(noradLabel, &lv_font_montserrat_18, 0);
 
-  for (uint8_t i = 0; i < 7; ++i) {
-    lv_obj_t *caption = lv_label_create(screen);
-    lv_label_set_text(caption, FIELD_LABELS[i]);
-    lv_obj_set_pos(caption, 10, 236 + i * 31);
-    makeLargeWhiteLabel(caption);
+  const uint32_t topColors[] = {0xA145AA, 0x7798C5, 0xB6ADD5};
+  const uint8_t topFields[] = {4, 6, 5};  // PASS, LTAN, ROT
+  for (uint8_t i = 0; i < 3; ++i) {
+    lv_obj_t *card = createCard(screen, 8 + i * 88, 252, 88, 53, topColors[i]);
+    const uint8_t field = topFields[i];
+    captionLabels[field] = lv_label_create(card);
+    lv_label_set_text(captionLabels[field], FIELD_LABELS[field]);
+    lv_obj_set_pos(captionLabels[field], 1, 2);
+    lv_obj_set_width(captionLabels[field], 84);
+    makeCardLabel(captionLabels[field], PARAMETER_FONT);
+    valueLabels[field] = lv_label_create(card);
+    lv_obj_set_pos(valueLabels[field], 1, 28);
+    lv_obj_set_width(valueLabels[field], 84);
+    makeCardLabel(valueLabels[field], PARAMETER_FONT);
+  }
 
-    valueLabels[i] = lv_label_create(screen);
-    lv_obj_set_pos(valueLabels[i], 87, 236 + i * 31);
-    lv_obj_set_width(valueLabels[i], 185);
-    lv_label_set_long_mode(valueLabels[i], LV_LABEL_LONG_DOT);
-    makeLargeWhiteLabel(valueLabels[i]);
+  const uint32_t rowColors[] = {0xB0EE00, 0x95D5E7, 0xEFE0A8, 0xC8C8C8};
+  const uint8_t rowFields[] = {0, 2, 3, 1};  // SMA, INCL, RAAN, PER
+  for (uint8_t i = 0; i < 4; ++i) {
+    lv_obj_t *card = createCard(screen, 8, 306 + i * 36, 264, 34, rowColors[i]);
+    const uint8_t field = rowFields[i];
+    captionLabels[field] = lv_label_create(card);
+    lv_label_set_text(captionLabels[field], FIELD_LABELS[field]);
+    lv_obj_set_pos(captionLabels[field], 5, 7);
+    lv_obj_set_width(captionLabels[field], 66);
+    makeCardLabel(captionLabels[field], PARAMETER_FONT);
+    valueLabels[field] = lv_label_create(card);
+    lv_obj_set_pos(valueLabels[field], 74, 7);
+    lv_obj_set_width(valueLabels[field], 184);
+    makeCardLabel(valueLabels[field], PARAMETER_FONT);
   }
   renderCurrentSatellite();
+  renderClock();
 }
 
 bool parseSatellite(char *line) {
@@ -396,6 +477,21 @@ bool parseSatellite(char *line) {
   sat.period = fields[3]; sat.incl = fields[4]; sat.raan = fields[5];
   sat.pass = fields[6]; sat.rotations = fields[7]; sat.ltan = fields[8];
   sat.color = parseColor(fields[9]);
+  return true;
+}
+
+bool parseClock(const String &line) {
+  // TIME|HH:MM is sent by the desktop widget with each atomic snapshot.
+  if (!line.startsWith("TIME|") || line.length() != 10 ||
+      line[7] != ':' || !isDigit(line[5]) || !isDigit(line[6]) ||
+      !isDigit(line[8]) || !isDigit(line[9])) return false;
+  const int hours = line.substring(5, 7).toInt();
+  const int minutes = line.substring(8, 10).toInt();
+  if (hours > 23 || minutes > 59) return false;
+  clockMinutes = hours * 60 + minutes;
+  clockSyncedMs = millis();
+  lastRenderedClockMinutes = -1;
+  renderClock();
   return true;
 }
 
@@ -468,8 +564,14 @@ bool processImageLine(const String &line) {
       return true;
     }
     const String norad = line.substring(10, separator);
-    const long byteCount = line.substring(separator + 1).toInt();
-    if (!validNoradId(norad) || byteCount != IMAGE_BYTES) {
+    const String metadata = line.substring(separator + 1);
+    const int windowSeparator = metadata.indexOf('|');
+    const long byteCount = (windowSeparator < 0 ? metadata :
+      metadata.substring(0, windowSeparator)).toInt();
+    const long ackWindow = windowSeparator < 0 ? 1 :
+      metadata.substring(windowSeparator + 1).toInt();
+    if (!validNoradId(norad) || byteCount != IMAGE_BYTES ||
+        ackWindow < 1 || ackWindow > 32) {
       sendToHost("IMG_ERROR|invalid metadata");
       return true;
     }
@@ -483,6 +585,8 @@ bool processImageLine(const String &line) {
       return true;
     }
     incomingImageBytes = 0;
+    incomingImageChunkCount = 0;
+    incomingImageAckWindow = (uint8_t)ackWindow;
     receivingImage = true;
     sendToHost("IMG_READY|%s", norad.c_str());
     return true;
@@ -510,7 +614,13 @@ bool processImageLine(const String &line) {
       return true;
     }
     incomingImageBytes += decodedSize;
-    sendToHost("IMG_NEXT");
+    ++incomingImageChunkCount;
+    // A sender that advertises an acknowledgement window waits for one reply
+    // per batch.  Old senders omit it and retain per-line acknowledgement.
+    if ((incomingImageChunkCount % incomingImageAckWindow) == 0 ||
+        incomingImageBytes == IMAGE_BYTES) {
+      sendToHost("IMG_NEXT");
+    }
     return true;
   }
 
@@ -533,6 +643,8 @@ bool processImageLine(const String &line) {
     receivingImage = false;
     incomingImageNorad = "";
     incomingImageBytes = 0;
+    incomingImageChunkCount = 0;
+    incomingImageAckWindow = 1;
     sendToHost("IMG_OK|%s", norad.c_str());
     renderCurrentSatellite();
     return true;
@@ -554,6 +666,10 @@ void processSerialLine(String line) {
   if (line.startsWith("CONFIG|")) {
     const long value = line.substring(7).toInt();
     if (value >= 1 && value <= 1440) dwellMinutes = (uint16_t)value;
+    return;
+  }
+  if (line.startsWith("TIME|")) {
+    if (!parseClock(line)) sendToHost("ERROR|invalid TIME");
     return;
   }
   if (line == "END") {
@@ -607,7 +723,18 @@ void readBleSerial() {
   }
 }
 
+void enableActiveHighPins() {
+  if (activeHighPinsEnabled || millis() < ACTIVE_HIGH_DELAY_MS) return;
+  for (const uint8_t pin : ACTIVE_HIGH_PINS) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, HIGH);
+  }
+  activeHighPinsEnabled = true;
+}
+
 void setup() {
+  // Do not touch GPIO 6/12/13/23 during the first minute.  In particular,
+  // GPIO 12 and 13 remain available for native-USB firmware flashing.
   Serial.begin(115200);
   delay(500);
   initBle();
@@ -631,6 +758,8 @@ void setup() {
 void loop() {
   readUsbSerial();
   readBleSerial();
+  enableActiveHighPins();
+  renderClock();
   const uint32_t now = millis();
   const int8_t manualStep = pendingSatelliteStep;
   if (manualStep != 0) {

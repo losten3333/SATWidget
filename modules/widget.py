@@ -1123,6 +1123,23 @@ class MainWidget(QWidget):
         if worker is not None:
             worker.deleteLater()
 
+    def handle_gp_received(self, updated_count):
+        """Вызывается из основного потока GUI после того, как расширение Chrome
+        прислало новые GP-данные (записался новый gp.json). Пересобирает модели
+        спутников (вместе с историей орбит) и обновляет виджет."""
+        if self.satellites.get_satellites():
+            self.satellites.update_tles()
+        else:
+            self.satellites.load_satellites()
+        self.satellites.update()
+        self.update()
+        self.show_update_notice(
+            f"GP-данные обновлены расширением "
+            f"({updated_count} записей)"
+        )
+        self._update_esp_pass_tracking()
+        self.request_esp_send()
+
     def update_scene(self):
 
         now = datetime.now(timezone.utc)

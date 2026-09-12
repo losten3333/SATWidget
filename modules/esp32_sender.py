@@ -3,7 +3,7 @@
 Порт протокола из ESP32_SatWidget/satellite_sender.py: виджет передаёт
 список строк SAT|... между BEGIN/CONFIG и END. Перед текстовым снимком
 при необходимости загружаются изображения КА из resources/satellites
-(файл <NORAD>.rgb565, RGB565LE 130x130) по протоколу IMG_*.
+(файл <NORAD>.rgb565, RGB565LE 150x150) по протоколу IMG_*.
 """
 import asyncio
 import base64
@@ -11,6 +11,7 @@ import json
 import math
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 BLE_NAME = "ESP32_SatWidget"
@@ -19,10 +20,14 @@ BLE_RX_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 BLE_TX_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 BLE_CHUNK_SIZE = 20
 
-IMAGE_WIDTH = 130
-IMAGE_HEIGHT = 130
+IMAGE_WIDTH = 150
+IMAGE_HEIGHT = 150
 IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT * 2
 IMAGE_CHUNK_BYTES = 96
+# The firmware accepts this acknowledgement window and has a 4 KiB BLE ring.
+# One IMG_NEXT per 12 data lines removes almost all BLE round-trip overhead.
+BLE_IMAGE_BATCH_LINES = 12
+BLE_IMAGE_PACKET_PAUSE_SECONDS = 0.003
 
 
 def image_directory() -> Path:
@@ -64,7 +69,7 @@ def _brighten(cr, cg, cb, factor=1.35):
 
 
 def placeholder_image_bytes(color_hex: str) -> bytes:
-    """Генерирует 130x130 RGB565LE карточку-заглушку цвета КА.
+    """Генерирует 150x150 RGB565LE карточку-заглушку цвета КА.
 
     Рисует силуэт спутника с солнечными панелями и кольцом орбиты, чтобы
     на устройстве у каждого КА была своя различимая иконка до появления
@@ -145,6 +150,7 @@ class BleTransport:
 
         self.__rx_buffer = bytearray()
         self.__rx_lock = threading.Lock()
+        self.__image_write_size = BLE_CHUNK_SIZE
 
     def _notify_callback(self, sender, data):
         with self.__rx_lock:
@@ -185,6 +191,14 @@ class BleTransport:
                     raise TimeoutError(f"BLE device '{self.name}' не найден")
                 client = self.BleakClient(device, timeout=self.timeout)
                 await client.connect()
+                characteristic = client.services.get_characteristic(BLE_RX_UUID)
+                if characteristic is not None:
+                    # Windows exposes the value negotiated with the ESP32;
+                    # retain 20 bytes as a safe fallback on older adapters.
+                    self.__image_write_size = max(
+                        BLE_CHUNK_SIZE,
+                        min(512, characteristic.max_write_without_response_size),
+                    )
                 # Характеристика TX поддерживает только уведомления,
                 # поэтому подписываемся на них сразу после подключения.
                 await client.start_notify(
@@ -213,8 +227,8 @@ class BleTransport:
             raise RuntimeError("BLE client is not connected")
 
         chunks = [
-            data[i:i + BLE_CHUNK_SIZE]
-            for i in range(0, len(data), BLE_CHUNK_SIZE)
+            data[i:i + self.__image_write_size]
+            for i in range(0, len(data), self.__image_write_size)
         ]
         loop = self.__loop
         event = threading.Event()
@@ -249,7 +263,7 @@ class BleTransport:
 
         Image lines are explicitly paced by the IMG_NEXT reply, so waiting for
         a GATT response for each 20-byte fragment only makes the first upload
-        appear frozen (roughly 2,500 requests per 130x130 image).
+        appear frozen (roughly 3,400 requests per 150x150 image).
         """
         if self.__client is None:
             raise RuntimeError("BLE client is not connected")
@@ -271,6 +285,10 @@ class BleTransport:
                             chunk,
                             response=False,
                         )
+                        # Without response, Windows can queue packets much
+                        # faster than the ESP32 application drains them.
+                        if self.__image_write_size <= BLE_CHUNK_SIZE:
+                            await asyncio.sleep(BLE_IMAGE_PACKET_PAUSE_SECONDS)
                 except Exception as error:
                     errors.append(error)
                 finally:
@@ -342,7 +360,11 @@ class Esp32Sender:
         self._ble_retry_delay = 0.75
 
     def _snapshot_lines(self, records):
-        lines = ["BEGIN", f"CONFIG|{self.minutes}"]
+        lines = [
+            "BEGIN",
+            f"CONFIG|{self.minutes}",
+            f"TIME|{datetime.now():%H:%M}",
+        ]
         for record in records:
             values = [record.get(key, "") for key in (
                 "name", "norad", "sma", "period", "incl", "raan",
@@ -457,22 +479,35 @@ class Esp32Sender:
                 f"({IMAGE_WIDTH}x{IMAGE_HEIGHT} RGB565)"
             )
 
-        transport.write(f"IMG_BEGIN|{norad}|{IMAGE_BYTES}\n".encode("ascii"))
+        transport.write(
+            f"IMG_BEGIN|{norad}|{IMAGE_BYTES}|{BLE_IMAGE_BATCH_LINES}\n".encode("ascii")
+        )
         transport.flush()
         self._wait_for_reply(transport, f"IMG_READY|{norad}")
 
-        for offset in range(0, len(image_data), IMAGE_CHUNK_BYTES):
-            chunk = base64.b64encode(
+        lines = [
+            b"IMG_DATA|" + base64.b64encode(
                 image_data[offset:offset + IMAGE_CHUNK_BYTES]
-            )
-            line = b"IMG_DATA|" + chunk + b"\n"
-            write_image_data = getattr(transport, "write_image_data", None)
+            ) + b"\n"
+            for offset in range(0, len(image_data), IMAGE_CHUNK_BYTES)
+        ]
+        write_image_data = getattr(transport, "write_image_data", None)
+        next_progress_percent = 10
+        for start in range(0, len(lines), BLE_IMAGE_BATCH_LINES):
+            batch = lines[start:start + BLE_IMAGE_BATCH_LINES]
             if write_image_data is None:
-                transport.write(line)
+                for line in batch:
+                    transport.write(line)
             else:
-                write_image_data(line)
+                # BLE Write Without Response stays fast, but a bounded batch
+                # prevents overflowing the ESP32 receive ring.
+                write_image_data(b"".join(batch))
             transport.flush()
             self._wait_for_reply(transport, "IMG_NEXT")
+            progress_percent = min(100, (start + len(batch)) * 100 // len(lines))
+            if progress_percent >= next_progress_percent or progress_percent == 100:
+                print(f"ESP32: изображение {norad}: {progress_percent}%")
+                next_progress_percent += 10
 
         transport.write(b"IMG_END\n")
         transport.flush()
