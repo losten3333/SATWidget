@@ -52,13 +52,19 @@ def main():
             cache_path=receiver_cfg.get("cache", "data/gp.json"),
             host=receiver_cfg.get("host", "127.0.0.1"),
         )
+        space_track_cfg = config.data.get("space_track", {})
+        receiver.set_space_track_credentials(
+            space_track_cfg.get("username", ""),
+            space_track_cfg.get("password", ""),
+        )
         receiver.start()
 
     manager = SatelliteManager(config)
     manager.initialize()
     window = MainWidget(
         config=config,
-        satellites=manager
+        satellites=manager,
+        receiver=receiver,
     )
     window.show()
 

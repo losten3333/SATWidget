@@ -1,13 +1,14 @@
 const DEFAULTS = {
   port: 9090,
-  intervalMinutes: 120,
+  pollMinutes: 1,
   provider: "space_track",
 };
 
 async function load() {
   const config = await chrome.storage.sync.get(DEFAULTS);
+
   document.getElementById("port").value = config.port;
-  document.getElementById("interval").value = config.intervalMinutes;
+  document.getElementById("interval").value = config.pollMinutes;
   document.getElementById("provider").value = config.provider;
 }
 
@@ -18,7 +19,7 @@ async function save() {
 
   await chrome.storage.sync.set({
     port: Number.isFinite(port) ? port : DEFAULTS.port,
-    intervalMinutes: Number.isFinite(interval) ? interval : DEFAULTS.intervalMinutes,
+    pollMinutes: Number.isFinite(interval) ? interval : DEFAULTS.pollMinutes,
     provider,
   });
 

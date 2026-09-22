@@ -20,6 +20,9 @@ data/gp.json
 data/tle.txt
 data/orbit_history.json
 
+# Local configuration with credentials (see config.example.json)
+config.json
+
 # Ephemeris (downloaded automatically by Skyfield on first run)
 de421.bsp
 

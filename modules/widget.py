@@ -8,7 +8,7 @@ from PySide6.QtCore import QEvent, Qt, QPoint, QPointF, QRect, QRectF
 from PySide6.QtCore import QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QScrollBar, QWidget, QLineEdit, QPushButton,
-    QMenu, QWidgetAction, QLabel, QCheckBox, QHBoxLayout
+    QMenu, QWidgetAction, QLabel, QCheckBox, QHBoxLayout, QApplication
 )
 
 from PySide6.QtGui import (
@@ -16,7 +16,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap, QPainterPath, QPolygonF, QImage,
-    QIntValidator
+    QIntValidator, QGuiApplication
 )
 
 from modules.astronomy import Astronomy
@@ -51,19 +51,6 @@ def sort_satellites(rows, column, ascending):
     return sorted(rows, key=key, reverse=not ascending)
 
 
-class SourceRefreshWorker(QThread):
-    """Downloads GP/TLE without blocking the Qt event loop."""
-
-    downloaded = Signal(bool)
-
-    def __init__(self, satellites, parent=None):
-        super().__init__(parent)
-        self.satellites = satellites
-
-    def run(self):
-        self.downloaded.emit(self.satellites.download_sources())
-
-
 class Esp32SendWorker(QThread):
     """Отправляет снимок спутников на ESP32 в фоновом потоке."""
 
@@ -81,7 +68,7 @@ class Esp32SendWorker(QThread):
 
 class MainWidget(QWidget):
 
-    def __init__(self, config, satellites):
+    def __init__(self, config, satellites, receiver=None):
 
         super().__init__()
         self.astronomy = Astronomy()
@@ -95,7 +82,7 @@ class MainWidget(QWidget):
             # Встроенный UTC доступен всегда и не должен блокировать запуск.
             self.timezone = timezone.utc
         self.satellites = satellites
-        self.source_refresh_worker = None
+        self.receiver = receiver
         self.update_notice_visible = False
         self.update_notice_timer = QTimer(self)
         self.update_notice_timer.setSingleShot(True)
@@ -225,10 +212,12 @@ class MainWidget(QWidget):
 
         self.setWindowTitle("SAT Widget")
 
-        self.move(
+        self._opened = False
+        self._initial_position = (
             display.get("x", 20),
             display.get("y", 20)
         )
+        self.move(*self._initial_position)
 
         # print(self.pos())
 
@@ -372,40 +361,126 @@ class MainWidget(QWidget):
 
         self.update()
 
+    def _work_area_for_point(self, point: QPoint | None):
+        """Возвращает рабочую область (без панели задач) экрана, на котором
+        лежит точка point. Если точка не указана или не попадает ни на один
+        экран — берётся экран, где находится окно, затем основной экран."""
+        screen = QGuiApplication.screenAt(point) if point is not None else None
+        if screen is None:
+            screen = self.screen()
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return None
+        return screen.availableGeometry()
+
+    def _frame_offsets(self):
+        """Возвращает (frame_w, frame_h) — насколько рамка окна (заголовок и
+        бордеры) больше клиентской области. Если окно ещё не показано,
+        считаем рамку нулевой (открытие поправит после первого показа)."""
+        frame = self.frameGeometry()
+        if frame.isEmpty() or frame.width() <= self.width():
+            return 0, 0
+        return frame.width() - self.width(), frame.height() - self.height()
+
+    def _fit_to_work_area(self, work: QRect):
+        """Масштабирует виджет под рабочую область: максимальный масштаб,
+        при котором окно (клиентская область + рамка) целиком помещается в
+        рабочую область — без захода под панель задач."""
+        base_height = self.base_map_height + self.base_status_height
+        base_width = self.base_map_width
+        if base_height <= 0 or base_width <= 0 or work.width() <= 0:
+            return
+        frame_w, frame_h = self._frame_offsets()
+        avail_h = work.height() - frame_h
+        avail_w = work.width() - frame_w
+        if avail_h <= 0 or avail_w <= 0:
+            return
+        scale = min(
+            avail_h / base_height,
+            avail_w / base_width,
+        )
+        scale = max(0.5, scale)
+        self.scale = scale
+        self.resize(
+            int(base_width * scale),
+            int(base_height * scale),
+        )
+
+    def _snap_top_right(self, work: QRect):
+        """Прижимает рамку окна к правому верхнему углу рабочей области."""
+        for _ in range(3):
+            frame = self.frameGeometry()
+            dx = work.right() - frame.right()
+            dy = work.top() - frame.top()
+            if dx == 0 and dy == 0:
+                return
+            self.move(self.x() + dx, self.y() + dy)
+
+    def _position_and_fit_on_open(self):
+        """При открытии: прижимает виджет к правому верхнему углу рабочей
+        области экрана, указанного начальной позицией в config, и
+        масштабирует его под доступную вертикаль."""
+        point = QPoint(
+            int(self._initial_position[0]),
+            int(self._initial_position[1]),
+        )
+        work = self._work_area_for_point(point)
+        if work is None:
+            return
+        self._fit_to_work_area(work)
+        self._snap_top_right(work)
+
+    def _ensure_pinned_top_right(self):
+        """Проверяет, что виджет прижат к правому верхнему углу рабочей
+        области экрана, на котором он находится (поддержка нескольких
+        мониторов с разными разрешениями)."""
+        work = self._work_area_for_point(None)
+        if work is None:
+            return
+        self._snap_top_right(work)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._opened:
+            self._opened = True
+            self._position_and_fit_on_open()
+
     def refresh_sources(self):
+        """Проверяет свежесть GP/TLE-данных.
 
-        if self.source_refresh_worker is not None:
+        Виджет не скачивает данные сам. Если gp.json устарел (старше
+        tle.update_hours в config.json), он:
+        - выводит отладочную информацию в консоль,
+        - показывает красное уведомление в виджете,
+        - выставляет флаг needs_update в HTTP-приёмнике.
+
+        Расширение Chrome опрашивает GET /status, видит needs_update=true,
+        скачивает свежие GP-данные и отправляет их обратно (POST /gp).
+        """
+        outdated = self.satellites.sources_are_outdated()
+
+        if self.receiver is not None:
+            self.receiver.set_needs_update(outdated)
+
+        if not outdated:
             return
 
-        if not self.satellites.sources_are_outdated():
-            return
-
-        self.source_refresh_worker = SourceRefreshWorker(
-            self.satellites,
-            self
+        print(
+            "[SATWidget] GP/TLE устарели — обновление выполнит "
+            "расширение Chrome (tle.update_hours)"
         )
-        self.source_refresh_worker.downloaded.connect(
-            self.apply_downloaded_sources
+        for path in self.satellites.enabled_source_files():
+            if path.exists():
+                print(f"[SATWidget] {path}: mtime"
+                      f" {datetime.fromtimestamp(path.stat().st_mtime)}")
+            else:
+                print(f"[SATWidget] {path}: файл отсутствует")
+        self.show_message(
+            "TLE-данные устарели: ожидается обновление "
+            "расширением Chrome",
+            ok=False,
         )
-        self.source_refresh_worker.finished.connect(
-            self.clear_source_refresh_worker
-        )
-        self.source_refresh_worker.start()
-
-    def apply_downloaded_sources(self, downloaded):
-
-        if not downloaded:
-            return
-
-        if self.satellites.get_satellites():
-            self.satellites.update_tles()
-        else:
-            self.satellites.load_satellites()
-
-        self.satellites.update()
-        self.update()
-        self.show_update_notice()
-        self.request_esp_send()
 
     def resizeEvent(self, event):
 
@@ -1115,18 +1190,12 @@ class MainWidget(QWidget):
         self.update_notice_visible = False
         self.update()
 
-    def clear_source_refresh_worker(self):
-
-        worker = self.source_refresh_worker
-        self.source_refresh_worker = None
-
-        if worker is not None:
-            worker.deleteLater()
-
     def handle_gp_received(self, updated_count):
         """Вызывается из основного потока GUI после того, как расширение Chrome
         прислало новые GP-данные (записался новый gp.json). Пересобирает модели
         спутников (вместе с историей орбит) и обновляет виджет."""
+        if self.receiver is not None:
+            self.receiver.set_needs_update(False)
         if self.satellites.get_satellites():
             self.satellites.update_tles()
         else:
@@ -1143,6 +1212,10 @@ class MainWidget(QWidget):
     def update_scene(self):
 
         now = datetime.now(timezone.utc)
+
+        # Каждое обновление экрана проверяем прижатие к правому верхнему
+        # углу рабочей области текущего монитора.
+        self._ensure_pinned_top_right()
 
         # Компьютер мог спать
         if (now - self.last_update).total_seconds() > 900:

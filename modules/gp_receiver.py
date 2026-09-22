@@ -1,14 +1,16 @@
 """Локальный HTTP-приёмник GP-данных от расширения Chrome.
 
-Расширение SATWidget GP Updater раз в заданный интервал скачивает GP-данные
-(JSON-список OMM-записей) и отправляет их POST-запросом сюда. Приёмник
-валидирует данные и атомарно записывает их в data/gp.json, откуда их читает
-SatelliteManager.
+Виджет проверяет свежесть gp.json (tle.update_hours) и выставляет флаг
+needs_update. Расширение SATWidget GP Updater опрашивает GET /status, и если
+флаг установлен — скачивает GP-данные (JSON-список OMM-записей) и отправляет
+их POST-запросом сюда. Приёмник валидирует данные и атомарно записывает их в
+data/gp.json, откуда их читает SatelliteManager.
 """
 import json
 import os
 import tempfile
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -24,6 +26,16 @@ class GpReceiver:
         self._thread = None
         self.last_status = None
         self.last_error = None
+        # Флаг «данные устарели и нужны обновлённые GP». Виджет выставляет его
+        # при проверке свежести gp.json (tle.update_hours), расширение Chrome
+        # видит его в GET /status и скачивает новые данные. Сбрасывается после
+        # успешного POST /gp.
+        self.needs_update = False
+        # Учётные данные Space-Track из config.json (space_track). Передаются
+        # расширению в /status только когда needs_update=true — расширение
+        # выполняет вход напрямую (form POST) и не хранит их у себя.
+        self._space_track_user = None
+        self._space_track_password = None
         # Опциональный колбэк, вызывается в потоке сервера после успешной
         # записи нового gp.json. Принимает количество записей.
         self.on_gp = None
@@ -31,6 +43,15 @@ class GpReceiver:
     def set_on_gp(self, callback):
         """Устанавливает колбэк, вызываемый после каждой успешной записи GP."""
         self.on_gp = callback
+
+    def set_space_track_credentials(self, username=None, password=None):
+        """Задаёт учётные данные Space-Track для расширения."""
+        self._space_track_user = username or None
+        self._space_track_password = password or None
+
+    def set_needs_update(self, value: bool):
+        """Выставляет/снимает флаг необходимости обновления GP-данных."""
+        self.needs_update = bool(value)
 
     def _make_handler(self):
         receiver = self
@@ -63,12 +84,31 @@ class GpReceiver:
                 self._send(204, b"")
 
             def do_GET(self):
-                """GET /status — служебный эндпоинт для проверки."""
-                payload = json.dumps({
+                """GET /status — служебный эндпоинт для расширения Chrome."""
+                mtime = None
+                if receiver.cache.exists():
+                    mtime = datetime.fromtimestamp(
+                        receiver.cache.stat().st_mtime, timezone.utc
+                    ).isoformat()
+                status_data = {
                     "status": receiver.last_status,
                     "error": receiver.last_error,
                     "cache": str(receiver.cache),
-                }).encode("utf-8")
+                    "needs_update": receiver.needs_update,
+                    "cache_exists": receiver.cache.exists(),
+                    "cache_mtime": mtime,
+                }
+                # Учётные данные Space-Track отдаются расширению только в
+                # момент актуальной потребности в обновлении, чтобы пустые
+                # опросы не передавали данные аккаунта без необходимости.
+                if receiver.needs_update:
+                    status_data["space_track_user"] = (
+                        receiver._space_track_user or ""
+                    )
+                    status_data["space_track_password"] = (
+                        receiver._space_track_password or ""
+                    )
+                payload = json.dumps(status_data).encode("utf-8")
                 self._send(200, payload)
 
             def do_POST(self):
@@ -108,6 +148,7 @@ class GpReceiver:
 
                 receiver.last_status = f"ok:{len(data)}"
                 receiver.last_error = None
+                receiver.needs_update = False
                 print(f"[gp_receiver] сохранено {len(data)} записей в "
                       f"{receiver.cache}")
                 self._send(200, json.dumps({"ok": True, "count": len(data)})

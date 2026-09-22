@@ -945,7 +945,8 @@ class SatelliteManager:
     def initialize(self):
 
         if self.sources_are_outdated():
-            print("Обновление источников...")
+            print("Данные источников устарели — обновление выполнит "
+                  "расширение Chrome")
 
         self.load_satellites()
 
