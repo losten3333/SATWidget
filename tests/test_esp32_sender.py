@@ -93,6 +93,70 @@ class Esp32SnapshotTests(unittest.TestCase):
                 self.assertFalse(is_temporary)
                 self.assertFalse(is_template)
 
+    def test_template_is_uploaded_once_as_static_asset(self):
+        class Transport:
+            def __init__(self):
+                self.replies = []
+                self.uploaded_ids = []
+
+            def write(self, data):
+                if data == b"IMG_STATUS\n":
+                    self.replies.append(b"IMG_STATUS|OK\n")
+                elif data.startswith(b"IMG_BEGIN|"):
+                    image_id = data.decode("ascii").split("|", 2)[1]
+                    self.uploaded_ids.append(image_id)
+                    self.replies.append(f"IMG_READY|{image_id}\n".encode("ascii"))
+                elif data == b"IMG_END\n":
+                    image_id = self.uploaded_ids[-1]
+                    self.replies.append(f"IMG_OK|{image_id}\n".encode("ascii"))
+                elif data.startswith(b"BEGIN\n"):
+                    self.replies.append(b"OK|1|1\n")
+
+            def write_image_data(self, data):
+                self.replies.append(b"IMG_NEXT\n")
+
+            def flush(self):
+                pass
+
+            def readline(self):
+                return self.replies.pop(0) if self.replies else b""
+
+        with TemporaryDirectory() as directory:
+            images = Path(directory)
+            (images / "template.rgb565").write_bytes(bytes([1]) * (150 * 150 * 2))
+
+            with patch("modules.esp32_sender.IMAGE_DIRECTORY", images), \
+                    patch("modules.esp32_sender.placeholder_manifest_path",
+                          return_value=images / "manifest.json"):
+                sender = Esp32Sender()
+                transport = Transport()
+                sender._send_update(transport, [{
+                    "name": "NO PHOTO",
+                    "norad": "12345",
+                    "sma": "",
+                    "period": "",
+                    "incl": "",
+                    "raan": "",
+                    "pass": "",
+                    "rotations": "",
+                    "ltan": "",
+                    "color": "#000000",
+                }])
+
+        self.assertEqual(transport.uploaded_ids, ["template"])
+
+    def test_existing_template_is_not_uploaded_again(self):
+        with TemporaryDirectory() as directory:
+            images = Path(directory)
+            (images / "template.rgb565").write_bytes(bytes([1]) * (150 * 150 * 2))
+
+            with patch("modules.esp32_sender.IMAGE_DIRECTORY", images):
+                sender = Esp32Sender()
+                with patch.object(sender, "_send_image") as send_image:
+                    sender._send_static_assets(object(), {"template"})
+
+        send_image.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

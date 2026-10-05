@@ -45,6 +45,10 @@ def image_directory() -> Path:
 
 IMAGE_DIRECTORY = image_directory()
 TEMPLATE_IMAGE_NAME = "template.rgb565"
+TEMPLATE_IMAGE_ID = "template"
+STATIC_IMAGE_ASSETS = (
+    (TEMPLATE_IMAGE_ID, TEMPLATE_IMAGE_NAME),
+)
 
 
 # Манифест хранит NORAD ID временных картинок на устройстве.  Старый формат
@@ -403,6 +407,10 @@ class Esp32Sender:
         return IMAGE_DIRECTORY / TEMPLATE_IMAGE_NAME
 
     @staticmethod
+    def _asset_image_path(filename: str) -> Path:
+        return IMAGE_DIRECTORY / filename
+
+    @staticmethod
     def _load_placeholder_manifest() -> tuple[set, set]:
         path = placeholder_manifest_path()
         try:
@@ -434,12 +442,16 @@ class Esp32Sender:
 
     def _template_image_bytes(self):
         path = self._template_image_path()
+        return self._image_file_bytes(path)
+
+    @staticmethod
+    def _image_file_bytes(path: Path):
         if not path.exists():
             return None
         image_data = path.read_bytes()
         if len(image_data) == IMAGE_BYTES:
             return image_data
-        print(f"ESP32: {path} неверного размера — игнорирую шаблон")
+        print(f"ESP32: {path} неверного размера — игнорирую файл")
         return None
 
     def _image_bytes_for_record(self, record):
@@ -459,7 +471,7 @@ class Esp32Sender:
         return placeholder_image_bytes(record.get("color", "#808080")), True, False
 
     def _stored_image_ids(self, transport) -> set:
-        """Возвращает NORAD ID изображений, уже сохранённых на ESP32."""
+        """Возвращает ID изображений, уже сохранённых на ESP32."""
         transport.write(b"IMG_STATUS\n")
         transport.flush()
         reply = self._wait_for_reply(transport, "IMG_STATUS|")
@@ -469,7 +481,7 @@ class Esp32Sender:
         return set(fields[2].split(",")) if len(fields) == 3 and fields[2] else set()
 
     def _send_image(self, transport, norad, image_data=None):
-        """Загружает изображение <NORAD>.rgb565 на ESP32 по протоколу IMG_*."""
+        """Загружает изображение <id>.rgb565 на ESP32 по протоколу IMG_*."""
         if image_data is None:
             image_path = self._local_image_path(norad)
             image_data = image_path.read_bytes()
@@ -513,6 +525,17 @@ class Esp32Sender:
         transport.flush()
         self._wait_for_reply(transport, f"IMG_OK|{norad}")
 
+    def _send_static_assets(self, transport, stored: set) -> None:
+        for image_id, filename in STATIC_IMAGE_ASSETS:
+            if image_id in stored:
+                continue
+            image_data = self._image_file_bytes(self._asset_image_path(filename))
+            if image_data is None:
+                continue
+            print(f"ESP32: загрузка ассета {filename}")
+            self._send_image(transport, image_id, image_data)
+            stored.add(image_id)
+
     def _send_update(self, transport, records):
         """Дозагружает недостающие изображения и отправляет текстовый снимок."""
         try:
@@ -522,6 +545,7 @@ class Esp32Sender:
             stored = None
 
         if stored is not None:
+            self._send_static_assets(transport, stored)
             for record in records:
                 norad = record.get("norad", "")
                 placeholder_uploaded = norad in self._placeholder_uploads
@@ -532,6 +556,9 @@ class Esp32Sender:
                     and real_image_path.stat().st_size == IMAGE_BYTES
                 )
                 template_available = self._template_image_bytes() is not None
+
+                if not real_file_exists and template_available:
+                    continue
 
                 # Перезаливаем временную картинку, когда появилось реальное
                 # фото, либо мигрируем старую сгенерированную заглушку на

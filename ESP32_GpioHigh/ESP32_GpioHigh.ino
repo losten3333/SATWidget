@@ -1,6 +1,6 @@
 // Minimal ESP32-C6 sketch: assert four external control lines at boot.
 
-constexpr uint8_t OUTPUT_PINS[] = {12, 13, 23, 6};
+constexpr uint8_t OUTPUT_PINS[] = {12, 13, 9, 6};
 constexpr uint32_t OUTPUT_DELAY_MS = 60UL * 1000UL;
 bool outputsEnabled = false;
 

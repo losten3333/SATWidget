@@ -1,0 +1,3 @@
+display_name: Grill Me
+short_description: Interrogate a programming task before coding starts.
+default_prompt: Before coding, grill me on this task. Identify the biggest unknowns, ask only questions that could change the implementation, and do not start programming until the requirements and acceptance criteria are clear enough.

@@ -33,6 +33,7 @@ def get_config_path() -> Path:
 
 
 from modules.config import Config
+from modules.console_capture import ConsoleCapture, ConsoleWindow
 from modules.gp_receiver import GpReceiver
 from modules.satellites import SatelliteManager
 from modules.widget import MainWidget
@@ -41,6 +42,9 @@ from modules.widget import MainWidget
 def main():
 
     app = QApplication(sys.argv)
+    console_capture = ConsoleCapture()
+    console_capture.install()
+    console_window = ConsoleWindow(console_capture)
     config = Config(get_config_path())
 
     # Локальный HTTP-приёмник GP-данных от расширения Chrome.
@@ -65,6 +69,7 @@ def main():
         config=config,
         satellites=manager,
         receiver=receiver,
+        console_window=console_window,
     )
     window.show()
 
@@ -86,6 +91,7 @@ def main():
         if receiver is not None:
             receiver.stop()
             receiver.set_on_gp(None)
+        console_capture.uninstall()
 
     sys.exit(exit_code)
 

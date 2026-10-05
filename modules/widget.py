@@ -24,6 +24,8 @@ from modules.esp32_sender import Esp32Sender
 
 # Ограничение прошивки ESP32 (MAX_SATELLITES в ESP32_SatWidget.ino).
 MAX_ESP_SATELLITES = 8
+MAX_WIDGET_SCALE = 2.0
+NIGHT_MASK_RENDER_SCALE = MAX_WIDGET_SCALE
 
 
 def sort_satellites(rows, column, ascending):
@@ -68,7 +70,7 @@ class Esp32SendWorker(QThread):
 
 class MainWidget(QWidget):
 
-    def __init__(self, config, satellites, receiver=None):
+    def __init__(self, config, satellites, receiver=None, console_window=None):
 
         super().__init__()
         self.astronomy = Astronomy()
@@ -83,6 +85,7 @@ class MainWidget(QWidget):
             self.timezone = timezone.utc
         self.satellites = satellites
         self.receiver = receiver
+        self.console_window = console_window
         self.update_notice_visible = False
         self.update_notice_timer = QTimer(self)
         self.update_notice_timer.setSingleShot(True)
@@ -179,6 +182,9 @@ class MainWidget(QWidget):
         self.delete_button = QPushButton("Удалить", self)
         self.delete_button.clicked.connect(self.remove_satellite_from_input)
 
+        self.console_button = QPushButton("Консоль", self)
+        self.console_button.clicked.connect(self.show_console)
+
         self.controls_style = """
             QLineEdit {
                 background: #2a2a2a;
@@ -207,6 +213,7 @@ class MainWidget(QWidget):
         self.norad_input.setStyleSheet(self.controls_style)
         self.add_button.setStyleSheet(self.controls_style)
         self.delete_button.setStyleSheet(self.controls_style)
+        self.console_button.setStyleSheet(self.controls_style)
 
         self.layout_controls()
 
@@ -349,7 +356,7 @@ class MainWidget(QWidget):
 
     def set_scale(self, scale: float):
 
-        self.scale = max(0.5, min(scale, 2.0))
+        self.scale = max(0.5, min(scale, MAX_WIDGET_SCALE))
 
         self.resize(
             int(self.base_map_width * self.scale),
@@ -563,6 +570,19 @@ class MainWidget(QWidget):
             int(80 * scale),
             int(height)
         )
+        self.console_button.setGeometry(
+            int((self.map_width - 100) * scale),
+            int(y),
+            int(90 * scale),
+            int(height)
+        )
+
+    def show_console(self):
+        if self.console_window is None:
+            return
+        self.console_window.show()
+        self.console_window.raise_()
+        self.console_window.activateWindow()
 
     def _norad_from_input(self) -> int | None:
 
@@ -1241,6 +1261,7 @@ class MainWidget(QWidget):
         painter = QPainter(self)
 
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         painter.save()
         painter.scale(self.scale, self.scale)
@@ -1301,8 +1322,11 @@ class MainWidget(QWidget):
 
     def create_night_mask(self):
 
-        width = self.map_width
-        height = self.map_height
+        # The day map remains at source resolution until QPainter renders it.
+        # Keep the generated night layer at the same effective resolution at
+        # the widget's maximum zoom, so resizing never enlarges a low-res mask.
+        width = int(self.map_width * NIGHT_MASK_RENDER_SCALE)
+        height = int(self.map_height * NIGHT_MASK_RENDER_SCALE)
 
         image = (
             self.earth_night

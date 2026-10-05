@@ -51,13 +51,18 @@ ESP32_SatWidget/
   image/
     52940.rgb565
     45783.rgb565
+    template.rgb565
 ```
 
 The file name is the satellite NORAD ID. Each file must be an uncompressed **150 x 150 px RGB565 little-endian (RGB565LE)** image, exactly **45,000 bytes**. The receiver swaps the two bytes of every pixel while saving it because the active LVGL configuration uses `LV_COLOR_16_SWAP = 1`.
 
+`template.rgb565` is an optional shared fallback image. It is uploaded once as `/image/template.rgb565`; satellites without their own `<NORAD>.rgb565` file display this single stored image instead of receiving duplicate per-satellite placeholder copies.
+
 On every run, `satellite_sender.py` first sends `IMG_STATUS` and receives the NORAD IDs of images that are already stored in FFat. If every image found locally in `image/` is present on the ESP32, it sends only orbital text data. Otherwise it uploads the local image set and then sends the snapshot.
 
-The sketch stores received images as `/image/<NORAD>.rgb565` in FFat and displays the matching one automatically. The selected ESP32 partition scheme must include a formatted internal FAT/FFat data partition; the Serial Monitor prints `FFAT READY` when it mounts successfully.
+The sketch stores received images as `/image/<id>.rgb565` in FFat and displays the matching NORAD image automatically, falling back to `/image/template.rgb565` when no individual image exists. The selected ESP32 partition scheme must include a formatted internal FAT/FFat data partition; the Serial Monitor prints `FFAT READY` when it mounts successfully.
+
+Send `IMG_CLEAR` or `CLEAR` over USB CDC or BLE to remove every file stored in `/image` in FFat. The device replies `IMG_CLEAR|OK|<removed_count>|<failed_count>`.
 
 Windows' built-in USB CDC serial driver is used; no custom driver or elevated permission is needed. Close Arduino Serial Monitor before running the script because a COM port can have only one client.
 The sender explicitly keeps DTR/RTS inactive so closing its COM port does not reset the ESP32 and discard the current RAM-only snapshot.
