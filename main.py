@@ -28,7 +28,10 @@ def get_config_path() -> Path:
     config_path = Path(sys.executable).parent / "config.json"
 
     if not config_path.exists():
-        shutil.copy2(bundled_dir / "config.json", config_path)
+        bundled_config = bundled_dir / "config.json"
+        if not bundled_config.exists():
+            bundled_config = bundled_dir / "config.example.json"
+        shutil.copy2(bundled_config, config_path)
 
     return config_path
 

@@ -17,7 +17,6 @@ a = Analysis(
     datas=[
         ('resources', 'resources'),
         ('de421.bsp', '.'),
-        ('config.json', '.'),
         ('config.example.json', '.'),
     ] + collect_data_files('skyfield'),
     hiddenimports=astronomy_hiddenimports,
