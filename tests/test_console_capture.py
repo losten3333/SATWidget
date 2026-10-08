@@ -31,6 +31,25 @@ class ConsoleCaptureTests(unittest.TestCase):
             sys.stdout = original_stdout
             sys.stderr = original_stderr
 
+    def test_capture_works_without_system_console_streams(self):
+        capture = ConsoleCapture()
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        sys.stdout = None
+        sys.stderr = None
+        try:
+            capture.install()
+            sys.stdout.write("windowed output\n")
+            sys.stderr.write("windowed error\n")
+            capture.uninstall()
+            self.assertIsNone(sys.stdout)
+            self.assertIsNone(sys.stderr)
+            self.assertIn("windowed output\n", capture.snapshot())
+            self.assertIn("windowed error\n", capture.snapshot())
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+
 
 if __name__ == "__main__":
     unittest.main()

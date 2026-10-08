@@ -20,17 +20,23 @@ class _TeeStream:
     def write(self, text):
         if not text:
             return 0
-        self._destination.write(text)
+        if self._destination is not None:
+            self._destination.write(text)
         self._capture.append(text)
         return len(text)
 
     def flush(self):
-        self._destination.flush()
+        if self._destination is not None:
+            self._destination.flush()
 
     def isatty(self):
-        return self._destination.isatty()
+        return bool(
+            self._destination is not None and self._destination.isatty()
+        )
 
     def fileno(self):
+        if self._destination is None:
+            raise OSError("The console stream is unavailable")
         return self._destination.fileno()
 
     def writable(self):
@@ -48,6 +54,7 @@ class ConsoleCapture(QObject):
         self._chunks = []
         self._original_stdout = None
         self._original_stderr = None
+        self._installed = False
 
     def append(self, text: str) -> None:
         with self._lock:
@@ -59,20 +66,22 @@ class ConsoleCapture(QObject):
             return "".join(self._chunks)
 
     def install(self) -> None:
-        if self._original_stdout is not None:
+        if self._installed:
             return
         self._original_stdout = sys.stdout
         self._original_stderr = sys.stderr
         sys.stdout = _TeeStream(self._original_stdout, self)
         sys.stderr = _TeeStream(self._original_stderr, self)
+        self._installed = True
 
     def uninstall(self) -> None:
-        if self._original_stdout is None:
+        if not self._installed:
             return
         sys.stdout = self._original_stdout
         sys.stderr = self._original_stderr
         self._original_stdout = None
         self._original_stderr = None
+        self._installed = False
 
 
 class ConsoleWindow(QDialog):
