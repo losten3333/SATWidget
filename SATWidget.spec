@@ -1,12 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+
+astronomy_hiddenimports = (
+    collect_submodules('skyfield') +
+    collect_submodules('jplephem') +
+    collect_submodules('sgp4')
+)
+
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('resources', 'resources'), ('de421.bsp', '.'), ('config.json', '.'), ('config.example.json', '.')],
-    hiddenimports=[],
+    datas=[
+        ('resources', 'resources'),
+        ('de421.bsp', '.'),
+        ('config.json', '.'),
+        ('config.example.json', '.'),
+    ] + collect_data_files('skyfield'),
+    hiddenimports=astronomy_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
