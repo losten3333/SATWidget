@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 MU = 398600.4418  # км³/с²
 EARTH_RADIUS = 6378.137
 EARTH_J2 = 1.08262668e-3
+ORBIT_HISTORY_DAYS = 30
 
 
 class SatelliteSource(Enum):
@@ -41,8 +42,6 @@ class Satellite:
 
     latitude: float = 0.0
     longitude: float = 0.0
-    altitude: float = 0.0
-
     speed: float = 0.0
     inclination: float = 0.0
     raan: float = 0.0
@@ -53,16 +52,15 @@ class Satellite:
     orbit: list = field(default_factory=list)
     orbit_timestamp: datetime | None = None
 
-    previous_altitude: float = 0.0
     mean_altitude: float = 0.0
     previous_mean_altitude: float | None = None
     orbit_change_72h: float | None = None
     inclination_change_72h: float | None = None
-    altitude_trend: int = 0
-
-    reference_altitude: float = 0.0
-
     next_pass: datetime | None = None
+
+    # Аппарат отсутствует в очередном GP.json и больше не участвует
+    # в расчётах, показе на карте и передаче на ESP32.
+    is_decayed: bool = False
 
     source: SatelliteSource = SatelliteSource.GP
 
@@ -214,7 +212,7 @@ class SatelliteManager:
     def record_orbit_altitudes(self, satellites, now=None):
 
         now = now or datetime.now(timezone.utc)
-        cutoff = now - timedelta(days=3)
+        cutoff = now - timedelta(days=ORBIT_HISTORY_DAYS)
 
         for sat in satellites:
             key = str(sat.norad)
@@ -475,9 +473,26 @@ class SatelliteManager:
                         f"GP ошибка для {norad}: {e}"
                     )
 
-            #
-            # Если GP нет — используем TLE
-            #
+            # Отсутствие в GP означает сход с орбиты. Создаём запись, чтобы
+            # аппарат не исчезал из таблицы и не вызывал ошибок в интерфейсе.
+            if self.source_is_enabled("gp") and gp is None:
+                satellite = Satellite(
+                    norad=norad,
+                    name=name,
+                    color=QColor(cfg["color"]),
+                    enabled=cfg["enabled"],
+                    map_visible=cfg.get("map_visible", cfg["enabled"]),
+                    esp_transmit=cfg.get("esp_transmit", False),
+                    show_track=cfg["show_track"],
+                    show_orbit=cfg["show_orbit"],
+                    show_label=cfg["show_label"],
+                    is_decayed=True,
+                )
+                self.satellites.append(satellite)
+                print(f"Спутник {norad} отсутствует в GP и помечен как сошедший с орбиты.")
+                continue
+
+            # Если GP отключён, используем TLE как запасной источник.
             if obj is None:
 
                 tle = tle_map.get(norad)
@@ -541,22 +556,6 @@ class SatelliteManager:
             self.restore_orbit_change(satellite)
 
             satellite.model = obj
-
-            position = obj.at(
-                self.ts.now()
-            )
-
-            subpoint = wgs84.subpoint(
-                position
-            )
-
-            satellite.reference_altitude = (
-                subpoint.elevation.km
-            )
-
-            satellite.altitude = (
-                satellite.reference_altitude
-            )
 
             self.satellites.append(
                 satellite
@@ -651,22 +650,6 @@ class SatelliteManager:
         self.restore_orbit_change(satellite)
 
         satellite.model = obj
-
-        position = obj.at(
-            self.ts.now()
-        )
-
-        subpoint = wgs84.subpoint(
-            position
-        )
-
-        satellite.reference_altitude = (
-            subpoint.elevation.km
-        )
-
-        satellite.altitude = (
-            satellite.reference_altitude
-        )
 
         self.satellites.append(
             satellite
@@ -764,6 +747,16 @@ class SatelliteManager:
             #
             gp = gp_map.get(sat.norad)
 
+            if self.source_is_enabled("gp") and gp is None:
+                if not sat.is_decayed:
+                    print(f"Спутник {sat.norad} отсутствует в GP и помечен как сошедший с орбиты.")
+                sat.is_decayed = True
+                sat.model = None
+                sat.track.clear()
+                sat.orbit.clear()
+                sat.next_pass = None
+                continue
+
             if gp is not None:
 
                 try:
@@ -782,6 +775,7 @@ class SatelliteManager:
                     sat.raan_change_per_day = self.calculate_raan_change_per_day(obj)
 
                     sat.model = obj
+                    sat.is_decayed = False
 
                     if sat.show_orbit:
                         self.calculate_orbit(sat, force=True)
@@ -842,7 +836,7 @@ class SatelliteManager:
 
         for sat in self.satellites:
 
-            if not sat.enabled:
+            if not sat.enabled or sat.is_decayed:
                 continue
 
             obj = sat.model
@@ -864,17 +858,6 @@ class SatelliteManager:
             sat.latitude = subpoint.latitude.degrees
             sat.longitude = subpoint.longitude.degrees
             sat.speed = self.calculate_speed(obj)
-            sat.altitude = subpoint.elevation.km
-            delta = sat.altitude - sat.reference_altitude
-
-            EPS = 0.2  # км
-
-            if delta > EPS:
-                sat.altitude_trend = 1
-            elif delta < -EPS:
-                sat.altitude_trend = -1
-            else:
-                sat.altitude_trend = 0
 
             sat.add_track_point(
                 sat.latitude,

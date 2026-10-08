@@ -4,7 +4,8 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QCursor, QIcon
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 # В собранной версии ресурсы находятся во внутренней папке PyInstaller.
 # Рабочая директория должна быть настроена до импорта модулей, загружающих
@@ -42,6 +43,9 @@ from modules.widget import MainWidget
 def main():
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    app_icon = QIcon(str(Path("resources") / "logo.png"))
+    app.setWindowIcon(app_icon)
     console_capture = ConsoleCapture()
     console_capture.install()
     console_window = ConsoleWindow(console_capture)
@@ -71,7 +75,33 @@ def main():
         receiver=receiver,
         console_window=console_window,
     )
-    window.show()
+    window.setWindowIcon(app_icon)
+
+    tray = QSystemTrayIcon(app_icon, app)
+    tray_menu = QMenu()
+    minimize_action = tray_menu.addAction("Свернуть")
+    restore_action = tray_menu.addAction("Развернуть")
+    tray_menu.addSeparator()
+    close_action = tray_menu.addAction("Закрыть")
+
+    minimize_action.triggered.connect(window.hide)
+
+    def restore_window():
+        window.showNormal()
+        window.raise_()
+        window.activateWindow()
+
+    restore_action.triggered.connect(restore_window)
+    close_action.triggered.connect(app.quit)
+    tray.setContextMenu(tray_menu)
+
+    def show_tray_menu(reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            tray_menu.popup(QCursor.pos())
+
+    tray.activated.connect(show_tray_menu)
+    tray.show()
+    window.showNormal()
 
     # Связка приёмника с GUI: новые GP от расширения мгновенно обновляют
     # спутники, историю орбит и виджет.

@@ -213,6 +213,75 @@ class SatelliteTests(unittest.TestCase):
 
         self.assertAlmostEqual(second.inclination_change_72h, 0.05)
 
+    def test_orbit_history_keeps_last_thirty_days(self):
+        now = datetime(2026, 7, 25, 12, tzinfo=timezone.utc)
+        satellite = Satellite(norad=1, name="Test", mean_altitude=500.0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SatelliteManager.__new__(SatelliteManager)
+            manager.orbit_history_file = Path(directory) / "orbit_history.json"
+            manager.orbit_history = {
+                "1": [{
+                    "timestamp": (now - timedelta(days=29)).isoformat(),
+                    "mean_altitude": 499.0,
+                    "inclination": 51.6,
+                }, {
+                    "timestamp": (now - timedelta(days=31)).isoformat(),
+                    "mean_altitude": 498.0,
+                    "inclination": 51.5,
+                }],
+            }
+            manager.record_orbit_altitudes([satellite], now)
+
+        entries = manager.orbit_history["1"]
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["mean_altitude"], 499.0)
+
+    def test_missing_gp_satellite_is_kept_as_decayed_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = make_manager(directory, gp_records=[])
+            manager.config.satellites = [{
+                "norad": 25544,
+                "name": "ISS (ZARYA)",
+                "color": "#00FF00",
+                "enabled": True,
+                "map_visible": True,
+                "show_track": True,
+                "show_orbit": True,
+                "show_label": True,
+            }]
+            manager.load_satellites()
+
+        self.assertEqual(len(manager.satellites), 1)
+        satellite = manager.satellites[0]
+        self.assertTrue(satellite.is_decayed)
+        self.assertIsNone(satellite.model)
+
+    def test_update_marks_satellite_decayed_when_gp_entry_disappears(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = make_manager(directory, gp_records=[ISS_GP])
+            manager.config.satellites = [{
+                "norad": 25544,
+                "name": "ISS (ZARYA)",
+                "color": "#00FF00",
+                "enabled": True,
+                "map_visible": True,
+                "show_track": True,
+                "show_orbit": True,
+                "show_label": True,
+            }]
+            manager.load_satellites()
+            satellite = manager.satellites[0]
+            satellite.track.append((1.0, 2.0))
+            satellite.orbit.append((1.0, 2.0))
+            manager.gp_file.write_text("[]", encoding="utf-8")
+            manager.update_tles()
+
+        self.assertTrue(satellite.is_decayed)
+        self.assertIsNone(satellite.model)
+        self.assertEqual(satellite.track, [])
+        self.assertEqual(satellite.orbit, [])
+
 
 class FileProviderDownloadTests(unittest.TestCase):
     """Обновление GP/TLE теперь выполняет расширение Chrome, а приложение

@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from modules.satellites import Satellite
+from modules.satellites import Satellite, SatelliteManager
 from modules.widget import MainWidget, sort_satellites
 
 
@@ -145,3 +145,34 @@ class EspFormattingTests(unittest.TestCase):
         widget = self.make_widget()
         sat = Satellite(norad=1, name="A")
         self.assertEqual(widget._esp_rotations(sat), "57976")
+
+    def test_decayed_satellite_is_not_sent_to_esp32(self):
+        widget = self.make_widget()
+        sat = Satellite(norad=1, name="A", esp_transmit=True, is_decayed=True)
+        widget.enabled_table_satellites = lambda: [sat]
+
+        self.assertEqual(widget._esp_satellite_records(), [])
+
+
+class HistoryGraphTests(unittest.TestCase):
+    def test_history_points_uses_only_last_thirty_days(self):
+        now = datetime.now(timezone.utc)
+        sat = Satellite(norad=1, name="A")
+        widget = MainWidget.__new__(MainWidget)
+        widget.satellites = SimpleNamespace(
+            orbit_history={
+                "1": [{
+                    "timestamp": (now - timedelta(days=29)).isoformat(),
+                    "mean_altitude": 500.0,
+                }, {
+                    "timestamp": (now - timedelta(days=31)).isoformat(),
+                    "mean_altitude": 499.0,
+                }],
+            },
+            _history_time=SatelliteManager._history_time,
+        )
+
+        points = widget._history_points(sat, "mean_altitude")
+
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0][1], 500.0)

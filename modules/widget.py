@@ -1,5 +1,5 @@
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from math import radians
 
@@ -16,7 +16,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap, QPainterPath, QPolygonF, QImage,
-    QIntValidator, QGuiApplication
+    QIntValidator
 )
 
 from modules.astronomy import Astronomy
@@ -24,8 +24,8 @@ from modules.esp32_sender import Esp32Sender
 
 # Ограничение прошивки ESP32 (MAX_SATELLITES в ESP32_SatWidget.ino).
 MAX_ESP_SATELLITES = 8
-MAX_WIDGET_SCALE = 2.0
-NIGHT_MASK_RENDER_SCALE = MAX_WIDGET_SCALE
+NIGHT_MASK_RENDER_SCALE = 2.0
+HISTORY_GRAPH_DAYS = 30
 
 
 def sort_satellites(rows, column, ascending):
@@ -95,15 +95,7 @@ class MainWidget(QWidget):
         self.map_options = display.get("map", {})
         self.map_width = display["width"]
         self.map_height = display["height"]
-        self.drag_position = None
-        self.base_map_width = self.map_width
-        self.base_map_height = self.map_height
-
-        self.scale = display.get("scale", 1.0)
-        self.resizing = False
-        self.enforcing_aspect_ratio = False
-        self.resize_start_pos = None
-        self.resize_start_scale = self.scale
+        self.scale = 1.0
         HEADER_HEIGHT = 28
         ROW_HEIGHT = 24
 
@@ -123,16 +115,17 @@ class MainWidget(QWidget):
             ("", 10, None),
             ("Название", 55, "name"),
             ("NORAD ID", 160, "norad"),
-            ("Орбита (Δ72ч)", 235, "mean_altitude"),
-            ("Высота", 350, "altitude"),
-            ("Период", 440, "period"),
-            ("Наклон. (Δ72ч)", 530, "inclination"),
-            ("RAAN (Δсут)", 650, "raan"),
-            ("LTAN", 755, None),
-            ("След. пролет", 830, "next_pass"),
+            ("SMA (Δ72ч)", 235, "mean_altitude"),
+            ("Период", 380, "period"),
+            ("Наклон. (Δ72ч)", 475, "inclination"),
+            ("RAAN (Δсут)", 620, "raan"),
+            ("LTAN", 745, None),
+            ("След. пролет", 820, "next_pass"),
         ]
         self.sort_column = None
         self.sort_ascending = True
+        self.history_hover = None
+        self.setMouseTracking(True)
 
 
         self.table_scroll_offset = 0
@@ -144,11 +137,9 @@ class MainWidget(QWidget):
                 8
         )
 
-        self.base_status_height = self.status_height
-
-        self.resize(
-            int(self.base_map_width * self.scale),
-            int((self.base_map_height + self.base_status_height) * self.scale)
+        self.setFixedSize(
+            self.map_width,
+            self.map_height + self.status_height,
         )
 
         self.setWindowOpacity(
@@ -157,9 +148,7 @@ class MainWidget(QWidget):
 
         self.setWindowFlags(
             Qt.Window |
-            Qt.WindowMinimizeButtonHint |
-            Qt.WindowMaximizeButtonHint |
-            Qt.WindowCloseButtonHint |
+            Qt.FramelessWindowHint |
             Qt.WindowStaysOnBottomHint
         )
 
@@ -282,54 +271,17 @@ class MainWidget(QWidget):
             event.accept()
             return
 
-        if event.button() == Qt.LeftButton and self.in_resize_zone(event.position().toPoint()):
-            self.resizing = True
-            self.resize_start_pos = event.globalPosition().toPoint()
-            self.resize_start_scale = self.scale
-
-            event.accept()
-            return
-
-        if event.button() == Qt.LeftButton:
-            self.drag_position = (
-                    event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            )
-            event.accept()
-
     def mouseMoveEvent(self, event):
-        if self.in_resize_zone(event.position().toPoint()):
-            self.setCursor(Qt.SizeFDiagCursor)
-        else:
-            self.setCursor(Qt.ArrowCursor)
+        self._update_history_hover(event.position())
 
-        if self.resizing:
-            delta = (
-                    event.globalPosition().toPoint()
-                    - self.resize_start_pos
-            )
-
-            change = delta.x() / self.base_map_width
-
-            self.set_scale(
-                self.resize_start_scale + change
-            )
-
-            event.accept()
-            return
-
-        if (
-                event.buttons() & Qt.LeftButton
-                and self.drag_position is not None
-        ):
-            self.move(
-                event.globalPosition().toPoint() - self.drag_position
-            )
-            event.accept()
+    def leaveEvent(self, event):
+        if self.history_hover is not None:
+            self.history_hover = None
+            self.update()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        self.resizing = False
-        self.drag_position = None
-        event.accept()
+        super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
 
@@ -345,113 +297,17 @@ class MainWidget(QWidget):
 
         super().wheelEvent(event)
 
-    def in_resize_zone(self, pos):
-
-        margin = 20
-
-        return (
-                pos.x() >= self.width() - margin and
-                pos.y() >= self.height() - margin
-        )
-
-    def set_scale(self, scale: float):
-
-        self.scale = max(0.5, min(scale, MAX_WIDGET_SCALE))
-
-        self.resize(
-            int(self.base_map_width * self.scale),
-            int(
-                (self.base_map_height + self.base_status_height)
-                * self.scale
-            )
-        )
-
-        self.update()
-
-    def _work_area_for_point(self, point: QPoint | None):
-        """Возвращает рабочую область (без панели задач) экрана, на котором
-        лежит точка point. Если точка не указана или не попадает ни на один
-        экран — берётся экран, где находится окно, затем основной экран."""
-        screen = QGuiApplication.screenAt(point) if point is not None else None
-        if screen is None:
-            screen = self.screen()
-        if screen is None:
-            screen = QGuiApplication.primaryScreen()
-        if screen is None:
-            return None
-        return screen.availableGeometry()
-
-    def _frame_offsets(self):
-        """Возвращает (frame_w, frame_h) — насколько рамка окна (заголовок и
-        бордеры) больше клиентской области. Если окно ещё не показано,
-        считаем рамку нулевой (открытие поправит после первого показа)."""
-        frame = self.frameGeometry()
-        if frame.isEmpty() or frame.width() <= self.width():
-            return 0, 0
-        return frame.width() - self.width(), frame.height() - self.height()
-
-    def _fit_to_work_area(self, work: QRect):
-        """Масштабирует виджет под рабочую область: максимальный масштаб,
-        при котором окно (клиентская область + рамка) целиком помещается в
-        рабочую область — без захода под панель задач."""
-        base_height = self.base_map_height + self.base_status_height
-        base_width = self.base_map_width
-        if base_height <= 0 or base_width <= 0 or work.width() <= 0:
-            return
-        frame_w, frame_h = self._frame_offsets()
-        avail_h = work.height() - frame_h
-        avail_w = work.width() - frame_w
-        if avail_h <= 0 or avail_w <= 0:
-            return
-        scale = min(
-            avail_h / base_height,
-            avail_w / base_width,
-        )
-        scale = max(0.5, scale)
-        self.scale = scale
-        self.resize(
-            int(base_width * scale),
-            int(base_height * scale),
-        )
-
-    def _snap_top_right(self, work: QRect):
-        """Прижимает рамку окна к правому верхнему углу рабочей области."""
-        for _ in range(3):
-            frame = self.frameGeometry()
-            dx = work.right() - frame.right()
-            dy = work.top() - frame.top()
-            if dx == 0 and dy == 0:
-                return
-            self.move(self.x() + dx, self.y() + dy)
-
-    def _position_and_fit_on_open(self):
-        """При открытии: прижимает виджет к правому верхнему углу рабочей
-        области экрана, указанного начальной позицией в config, и
-        масштабирует его под доступную вертикаль."""
-        point = QPoint(
-            int(self._initial_position[0]),
-            int(self._initial_position[1]),
-        )
-        work = self._work_area_for_point(point)
-        if work is None:
-            return
-        self._fit_to_work_area(work)
-        self._snap_top_right(work)
-
-    def _ensure_pinned_top_right(self):
-        """Проверяет, что виджет прижат к правому верхнему углу рабочей
-        области экрана, на котором он находится (поддержка нескольких
-        мониторов с разными разрешениями)."""
-        work = self._work_area_for_point(None)
-        if work is None:
-            return
-        self._snap_top_right(work)
+    def _ensure_configured_position(self):
+        """Возвращает левый верхний угол виджета к координатам из config."""
+        position = QPoint(*self._initial_position)
+        if self.pos() != position:
+            self.move(position)
 
     def showEvent(self, event):
         super().showEvent(event)
         if not self._opened:
             self._opened = True
-            self._position_and_fit_on_open()
+            self._ensure_configured_position()
 
     def refresh_sources(self):
         """Проверяет свежесть GP/TLE-данных.
@@ -490,22 +346,6 @@ class MainWidget(QWidget):
         )
 
     def resizeEvent(self, event):
-
-        if self.base_map_width and not self.enforcing_aspect_ratio:
-            scale = self.width() / self.base_map_width
-            target_height = int(
-                (self.base_map_height + self.base_status_height) * scale
-            )
-
-            # Нативное растягивание рамки Windows сохраняет соотношение
-            # сторон, как и ручное масштабирование виджета.
-            if abs(self.height() - target_height) > 1:
-                self.enforcing_aspect_ratio = True
-                self.resize(self.width(), target_height)
-                self.enforcing_aspect_ratio = False
-
-            self.scale = scale
-
         super().resizeEvent(event)
         if hasattr(self, "table_scrollbar"):
             self.layout_table_scrollbar()
@@ -1025,7 +865,7 @@ class MainWidget(QWidget):
         selected = [
             sat
             for sat in self.enabled_table_satellites()
-            if sat.esp_transmit
+            if sat.esp_transmit and not sat.is_decayed
         ]
 
         def pass_key(sat):
@@ -1149,6 +989,52 @@ class MainWidget(QWidget):
 
         return None
 
+    def _update_history_hover(self, position):
+        """Показывает график только при наведении на SMA или наклонение."""
+        if self.scale == 0:
+            return
+
+        x = position.x() / self.scale
+        y = position.y() / self.scale
+        row_top = self.map_height + self.table_header_height
+        rows = self._sorted_table_satellites()
+        visible_rows = rows[
+            self.table_scroll_offset:
+            self.table_scroll_offset + self.max_table_rows
+        ]
+        hover = None
+
+        for index, sat in enumerate(visible_rows):
+            top = row_top + index * self.table_row_height
+            if not top <= y < top + self.table_row_height:
+                continue
+            if 235 <= x < 380:
+                hover = (sat, "mean_altitude")
+            elif 475 <= x < 620:
+                hover = (sat, "inclination")
+            break
+
+        if hover != self.history_hover:
+            self.history_hover = hover
+            self.update()
+
+    def _history_points(self, sat, value_key):
+        """Возвращает корректные точки истории параметра за последний месяц."""
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=HISTORY_GRAPH_DAYS)
+        points = []
+
+        for entry in self.satellites.orbit_history.get(str(sat.norad), []):
+            timestamp = self.satellites._history_time(entry.get("timestamp"))
+            value = entry.get(value_key)
+            if (
+                    timestamp is not None and timestamp >= cutoff and
+                    isinstance(value, (int, float))
+            ):
+                points.append((timestamp, float(value)))
+
+        return sorted(points, key=lambda point: point[0])
+
     def toggle_table_sort(self, position) -> bool:
 
         if self.scale == 0:
@@ -1233,9 +1119,8 @@ class MainWidget(QWidget):
 
         now = datetime.now(timezone.utc)
 
-        # Каждое обновление экрана проверяем прижатие к правому верхнему
-        # углу рабочей области текущего монитора.
-        self._ensure_pinned_top_right()
+        # Положение всегда задаёт конфигурация, а не предыдущий перетаскивание.
+        self._ensure_configured_position()
 
         # Компьютер мог спать
         if (now - self.last_update).total_seconds() > 900:
@@ -1290,6 +1175,7 @@ class MainWidget(QWidget):
             self.draw_tracks(painter)
         self.draw_satellites(painter)
         self.draw_status_panel(painter)
+        self.draw_history_tooltip(painter)
         self.draw_update_notice(painter)
 
         painter.restore()
@@ -1432,7 +1318,7 @@ class MainWidget(QWidget):
 
         for sat in self.satellites.get_satellites():
 
-            if not sat.enabled or not sat.map_visible:
+            if not sat.enabled or sat.is_decayed or not sat.map_visible:
                 continue
 
             x, y = self.satellites.latlon_to_xy(
@@ -1484,7 +1370,10 @@ class MainWidget(QWidget):
 
         for sat in self.satellites.satellites:
 
-            if not sat.enabled or not sat.map_visible or not sat.show_track:
+            if (
+                    not sat.enabled or sat.is_decayed or
+                    not sat.map_visible or not sat.show_track
+            ):
                 continue
 
             if len(sat.track) < 2:
@@ -1542,7 +1431,7 @@ class MainWidget(QWidget):
     def draw_orbits(self, painter):
         for sat in self.satellites.satellites:
 
-            if not sat.enabled or not sat.map_visible:
+            if not sat.enabled or sat.is_decayed or not sat.map_visible:
                 continue
 
             if not sat.show_orbit:
@@ -1738,10 +1627,11 @@ class MainWidget(QWidget):
             self.draw_gear_icon(
                 painter,
                 QPointF(33, row_y - 8),
-                5.0
+                5.0,
+                sat.color,
             )
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(Qt.white)
+            painter.setPen(QColor(130, 35, 35) if sat.is_decayed else Qt.white)
 
             name_rect = QRectF(55, row_y - 16, 160 - 55 - 8, 20)
             painter.drawText(
@@ -1750,88 +1640,63 @@ class MainWidget(QWidget):
                 painter.fontMetrics().elidedText(sat.name, Qt.ElideRight, int(name_rect.width()))
             )
 
+            painter.setPen(Qt.white)
             painter.drawText(160, row_y, str(sat.norad))
 
             x = 235
-
-            # Основная высота
-            text = f"{sat.mean_altitude:.1f} км"
-
-            painter.setPen(Qt.white)
             metrics = painter.fontMetrics()
-            painter.drawText(x, row_y, text)
 
-            self.draw_history_delta(
-                painter,
-                x + metrics.horizontalAdvance(text) + 6,
-                row_y,
-                sat.orbit_change_72h,
-                precision=2,
-                colored=True
-            )
-
-            painter.setPen(Qt.white)
-
-            painter.drawText(
-                350,
-                row_y,
-                f"{sat.altitude:.1f} км"
-            )
-
-            painter.drawText(
-                440,
-                row_y,
-                f"{sat.period:.2f} мин"
-            )
-
-            inclination_text = f"{sat.inclination:.2f}°"
-            painter.drawText(
-                530,
-                row_y,
-                inclination_text
-            )
-            self.draw_history_delta(
-                painter,
-                530 + metrics.horizontalAdvance(inclination_text) + 6,
-                row_y,
-                sat.inclination_change_72h,
-                precision=2,
-                colored=True
-            )
-
-            raan_text = f"{sat.raan:.2f}°"
-            painter.setPen(Qt.white)
-            painter.drawText(650, row_y, raan_text)
-            self.draw_history_delta(
-                painter,
-                650 + metrics.horizontalAdvance(raan_text) + 4,
-                row_y,
-                sat.raan_change_per_day,
-                precision=2,
-                colored=False
-            )
-
-            painter.drawText(755, row_y, self._esp_ltan(sat))
-
-            if sat.next_pass:
-                value = self.format_next_pass(sat)
+            if sat.is_decayed:
+                for value_x in (235, 380, 475, 620, 745, 820):
+                    painter.drawText(value_x, row_y, "—")
             else:
-                value = "—"
+                sma_text = f"{sat.mean_altitude:.1f} км"
+                painter.drawText(x, row_y, sma_text)
+                self.draw_history_delta(
+                    painter,
+                    x + metrics.horizontalAdvance(sma_text) + 6,
+                    row_y,
+                    sat.orbit_change_72h,
+                    precision=2,
+                    colored=True
+                )
 
-            painter.drawText(
-                830,
-                row_y,
-                value
-            )
+                painter.drawText(380, row_y, f"{sat.period:.2f} мин")
+
+                inclination_text = f"{sat.inclination:.2f}°"
+                painter.drawText(475, row_y, inclination_text)
+                self.draw_history_delta(
+                    painter,
+                    475 + metrics.horizontalAdvance(inclination_text) + 6,
+                    row_y,
+                    sat.inclination_change_72h,
+                    precision=2,
+                    colored=True
+                )
+
+                raan_text = f"{sat.raan:.2f}°"
+                painter.drawText(620, row_y, raan_text)
+                self.draw_history_delta(
+                    painter,
+                    620 + metrics.horizontalAdvance(raan_text) + 4,
+                    row_y,
+                    sat.raan_change_per_day,
+                    precision=2,
+                    colored=False
+                )
+
+                painter.drawText(745, row_y, self._esp_ltan(sat))
+                value = self.format_next_pass(sat) if sat.next_pass else "—"
+                painter.drawText(820, row_y, value)
 
             row_y += 22
 
-    def draw_gear_icon(self, painter, center, radius):
+    def draw_gear_icon(self, painter, center, radius, color):
 
         painter.save()
         painter.translate(center.x(), center.y())
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(210, 210, 210))
+        painter.setBrush(QColor(color))
 
         teeth = 8
 
@@ -1881,6 +1746,105 @@ class MainWidget(QWidget):
 
         painter.setPen(Qt.white)
         painter.drawText(x, y, ")")
+
+    def draw_history_tooltip(self, painter: QPainter):
+        """Рисует месячную историю SMA или наклонения над таблицей."""
+        if self.history_hover is None:
+            return
+
+        sat, value_key = self.history_hover
+        points = self._history_points(sat, value_key)
+        title = "SMA, км" if value_key == "mean_altitude" else "Наклонение, °"
+        decimals = 1 if value_key == "mean_altitude" else 3
+        width = 300
+        height = 190
+        left = min(self.map_width - width - 8, 235)
+        top = max(8, self.map_height - height - 8)
+        box = QRectF(left, top, width, height)
+
+        painter.save()
+        painter.setPen(QPen(QColor(190, 190, 190)))
+        painter.setBrush(QColor(70, 70, 70, 245))
+        painter.drawRect(box)
+
+        painter.setPen(Qt.white)
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(left + 10, top + 19, f"{sat.name}: {title}")
+        font.setBold(False)
+        painter.setFont(font)
+
+        plot = QRectF(left + 52, top + 30, width - 64, height - 58)
+        if not points:
+            painter.drawText(
+                plot,
+                Qt.AlignCenter,
+                "Нет истории за последние 30 дней"
+            )
+            painter.restore()
+            return
+
+        start = datetime.now(timezone.utc) - timedelta(days=HISTORY_GRAPH_DAYS)
+        end = datetime.now(timezone.utc)
+        values = [value for _, value in points]
+        minimum = min(values)
+        maximum = max(values)
+        span = maximum - minimum
+        padding = span * 0.08 if span else max(abs(maximum) * 0.01, 0.01)
+        lower = minimum - padding
+        upper = maximum + padding
+        value_span = upper - lower
+        seconds = (end - start).total_seconds()
+
+        painter.setPen(QPen(QColor(120, 120, 120)))
+        for fraction in (0.0, 0.5, 1.0):
+            y = plot.bottom() - plot.height() * fraction
+            painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+            value = lower + value_span * fraction
+            label = f"{value:.{decimals}f}"
+            painter.setPen(Qt.white)
+            painter.drawText(
+                QRectF(left + 4, y - 8, 44, 16),
+                Qt.AlignRight | Qt.AlignVCenter,
+                label
+            )
+            painter.setPen(QPen(QColor(120, 120, 120)))
+
+        for day in range(0, HISTORY_GRAPH_DAYS + 1, 7):
+            x = plot.left() + plot.width() * day / HISTORY_GRAPH_DAYS
+            painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+            painter.setPen(Qt.white)
+            label = (start + timedelta(days=day)).strftime("%d.%m")
+            painter.drawText(
+                QRectF(x - 19, plot.bottom() + 4, 38, 16),
+                Qt.AlignHCenter | Qt.AlignTop,
+                label
+            )
+            painter.setPen(QPen(QColor(120, 120, 120)))
+
+        path = QPainterPath()
+        for index, (timestamp, value) in enumerate(points):
+            fraction = max(0.0, min(1.0, (timestamp - start).total_seconds() / seconds))
+            x = plot.left() + plot.width() * fraction
+            y = plot.bottom() - plot.height() * (value - lower) / value_span
+            if index == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+
+        painter.setClipRect(plot)
+        painter.setPen(QPen(Qt.white, 1.5))
+        painter.drawPath(path)
+        painter.setBrush(Qt.white)
+        painter.setPen(Qt.NoPen)
+        for timestamp, value in points:
+            fraction = max(0.0, min(1.0, (timestamp - start).total_seconds() / seconds))
+            x = plot.left() + plot.width() * fraction
+            y = plot.bottom() - plot.height() * (value - lower) / value_span
+            painter.drawEllipse(QPointF(x, y), 2.0, 2.0)
+
+        painter.restore()
 
     def draw_update_notice(self, painter: QPainter):
 
